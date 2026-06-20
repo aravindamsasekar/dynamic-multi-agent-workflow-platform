@@ -5,7 +5,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from platform.core.interfaces.policy import IPolicyEngine, IRule
+from platform.core.exceptions import PolicyViolation
+from platform.core.interfaces.policy import IPolicyEngine, IRule, PolicyDecision
 
 
 class HookPoint(str, Enum):
@@ -20,7 +21,7 @@ class PolicyEngine(IPolicyEngine):
 
     Called by AgentRuntime at PRE_AGENT, POST_AGENT, PRE_TOOL, POST_TOOL.
     Raises PolicyViolation if any rule returns BLOCK.
-    Emits PolicyViolationEvent to observer on WARN decisions.
+    WARN decisions pass silently in V1 (observer not wired here).
     """
 
     def __init__(self, rules: list[IRule] | None = None) -> None:
@@ -28,10 +29,15 @@ class PolicyEngine(IPolicyEngine):
 
     def add_rule(self, rule: IRule) -> None:
         """Register an additional rule with this engine."""
-        # TODO: implement
-        raise NotImplementedError
+        self._rules.append(rule)
 
     def evaluate(self, hook: str, context: dict[str, Any]) -> None:
         """Evaluate all rules at the given hook point. Raises PolicyViolation if blocked."""
-        # TODO: implement
-        raise NotImplementedError
+        for rule in self._rules:
+            decision = rule.check(context)
+            if decision == PolicyDecision.BLOCK:
+                hook_name = hook.value if hasattr(hook, "value") else hook
+                raise PolicyViolation(
+                    f"Policy blocked execution at hook '{hook_name}': "
+                    f"{rule.__class__.__name__}"
+                )

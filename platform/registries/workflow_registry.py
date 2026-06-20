@@ -17,15 +17,22 @@ class WorkflowRegistry:
 
     def register(self, definition: WorkflowDefinition) -> None:
         """Add a WorkflowDefinition to the registry."""
-        # TODO: implement
-        raise NotImplementedError
+        self._store[definition.workflow_id] = definition
 
     def get(self, workflow_id: str) -> WorkflowDefinition:
         """Return WorkflowDefinition by id. Raises WorkflowNotFound if missing."""
-        # TODO: implement
-        raise NotImplementedError
+        if workflow_id not in self._store:
+            raise WorkflowNotFound(f"Workflow '{workflow_id}' not found")
+        return self._store[workflow_id]
 
     def list_all(self) -> list[WorkflowDefinition]:
         """Return all registered WorkflowDefinitions."""
-        # TODO: implement
-        raise NotImplementedError
+        return list(self._store.values())
+
+    def exists(self, workflow_id: str) -> bool:
+        """Return True if a workflow with the given id is registered."""
+        return workflow_id in self._store
+
+    def clear(self) -> None:
+        """Remove all registered WorkflowDefinitions."""
+        self._store.clear()

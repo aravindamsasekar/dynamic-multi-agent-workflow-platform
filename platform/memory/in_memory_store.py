@@ -17,13 +17,22 @@ class InMemoryStore(IMemoryStore):
         self._histories: dict[tuple[str, str], list[Message]] = {}
 
     def get_history(self, run_id: str, agent_id: str) -> list[Message]:
-        # TODO: implement
-        raise NotImplementedError
+        """Return a copy of conversation history for the given run and agent."""
+        return list(self._histories.get((run_id, agent_id), []))
 
     def append(self, run_id: str, agent_id: str, message: Message) -> None:
-        # TODO: implement
-        raise NotImplementedError
+        """Append a message to the conversation history for the given run and agent."""
+        key = (run_id, agent_id)
+        if key not in self._histories:
+            self._histories[key] = []
+        self._histories[key].append(message)
 
     def clear(self, run_id: str, agent_id: str) -> None:
-        # TODO: implement
-        raise NotImplementedError
+        """Clear conversation history for the given run and agent."""
+        self._histories.pop((run_id, agent_id), None)
+
+    def clear_run(self, run_id: str) -> None:
+        """Clear conversation history for all agents in the given run."""
+        keys_to_remove = [k for k in self._histories if k[0] == run_id]
+        for key in keys_to_remove:
+            del self._histories[key]
