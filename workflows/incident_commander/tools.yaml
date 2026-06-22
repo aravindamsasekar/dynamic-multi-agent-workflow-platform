@@ -1,1 +1,52 @@
-# TODO: Define Incident Commander tool definitions
+tools:
+  - name: mock_metrics_tool
+    description: Returns current system performance metrics.
+    input_schema:
+      type: object
+      properties:
+        time_range:
+          type: string
+          description: Time range to query (e.g. "last_5m")
+      required: []
+    adapter_type: mock
+    adapter_config:
+      response: >
+        {"cpu_usage_pct": 94.2, "memory_usage_pct": 87.3,
+         "p99_latency_ms": 2340, "error_rate": 0.082,
+         "timestamp": "2024-01-15T14:25:00Z"}
+      is_error: false
+
+  - name: mock_logs_tool
+    description: Returns recent application error log entries.
+    input_schema:
+      type: object
+      properties:
+        limit:
+          type: integer
+          description: Maximum number of log lines to return
+      required: []
+    adapter_type: mock
+    adapter_config:
+      response: |
+        ERROR [payment-service] 14:23:01 Connection timeout to db-primary after 5000ms
+        ERROR [payment-service] 14:23:02 Retry 1/3 failed: db-primary unreachable
+        ERROR [payment-service] 14:23:04 Circuit breaker OPEN for db-primary
+        ERROR [payment-service] 14:23:06 Request queue depth: 847 (limit: 200)
+      is_error: false
+
+  - name: mock_deploy_tool
+    description: Returns deployment history for all services.
+    input_schema:
+      type: object
+      properties:
+        hours:
+          type: integer
+          description: Hours of history to retrieve
+      required: []
+    adapter_type: mock
+    adapter_config:
+      response: >
+        [{"service": "payment-service", "version": "v2.4.1",
+          "deployed_at": "2024-01-15T13:48:00Z", "deployer": "ci-bot",
+          "status": "completed", "rollback_available": true}]
+      is_error: false

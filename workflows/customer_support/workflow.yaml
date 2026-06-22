@@ -1,1 +1,16 @@
-# TODO: Define Customer Support workflow configuration
+workflow_id: customer_support
+name: Customer Support Router
+description: >
+  Classifies incoming customer queries and routes them to the
+  appropriate specialist agent.
+pattern: router
+agent_ids:
+  - classifier_agent
+  - billing_agent
+  - technical_agent
+pattern_config:
+  classifier_agent_id: classifier_agent
+  routes:
+    billing: billing_agent
+    technical: technical_agent
+hitl_enabled: false

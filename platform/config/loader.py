@@ -72,6 +72,10 @@ class ConfigLoader:
             if workflow_dir.is_dir():
                 self._load_workflow(workflow_dir)
 
+    def load_one(self, workflow_dir: Path) -> None:
+        """Load a single workflow directory into registries."""
+        self._load_workflow(workflow_dir)
+
     def _load_workflow(self, workflow_dir: Path) -> None:
         """Load a single workflow directory (workflow.yaml + agents.yaml + tools.yaml)."""
         workflow_path = workflow_dir / "workflow.yaml"

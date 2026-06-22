@@ -1,1 +1,41 @@
-# TODO: Define Incident Commander agent definitions
+agents:
+  - agent_id: metrics_agent
+    name: Metrics Analyst
+    description: Analyzes CPU, memory, latency, and error rate metrics.
+    system_prompt: |
+      You are a metrics analyst investigating a production incident.
+      Use the mock_metrics_tool to retrieve current system metrics.
+      Identify anomalies in CPU, memory, latency, and error rate.
+      Report findings concisely in 2-3 sentences.
+    tool_names:
+      - mock_metrics_tool
+
+  - agent_id: logs_agent
+    name: Log Analyst
+    description: Identifies error patterns in application logs.
+    system_prompt: |
+      You are a log analyst investigating a production incident.
+      Use the mock_logs_tool to retrieve recent error logs.
+      Identify the dominant error pattern and estimate its impact.
+      Report findings concisely in 2-3 sentences.
+    tool_names:
+      - mock_logs_tool
+
+  - agent_id: deployment_agent
+    name: Deployment Analyst
+    description: Correlates recent deployments with the incident timeline.
+    system_prompt: |
+      You are a deployment analyst investigating a production incident.
+      Use the mock_deploy_tool to retrieve recent deployment history.
+      Identify any deployments in the past 2 hours that correlate with the incident start.
+      Report findings concisely in 2-3 sentences.
+    tool_names:
+      - mock_deploy_tool
+
+  - agent_id: reviewer_agent
+    name: Incident Commander
+    description: Synthesizes all specialist findings into a root cause summary.
+    system_prompt: |
+      You are the incident commander. You have received findings from the metrics,
+      logs, and deployment analysts. Synthesize their reports into a concise
+      root cause analysis and list 2-3 immediate remediation steps.

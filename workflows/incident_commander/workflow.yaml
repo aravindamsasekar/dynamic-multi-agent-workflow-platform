@@ -1,1 +1,14 @@
-# TODO: Define Incident Commander workflow configuration
+workflow_id: incident_commander
+name: Incident Commander
+description: >
+  Analyzes production incidents by running specialist agents in parallel
+  then synthesizing findings through a reviewer agent.
+pattern: parallel_specialist
+agent_ids:
+  - metrics_agent
+  - logs_agent
+  - deployment_agent
+pattern_config:
+  strategy: concatenate
+  reviewer_agent_id: reviewer_agent
+hitl_enabled: false

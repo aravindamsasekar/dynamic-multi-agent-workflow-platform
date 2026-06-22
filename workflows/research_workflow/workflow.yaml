@@ -1,0 +1,15 @@
+workflow_id: research_workflow
+name: Research Workflow
+description: >
+  Iteratively plans, executes, and evaluates research steps until the
+  observer determines the task is complete or max iterations are reached.
+pattern: planner_executor_observer
+pattern_config:
+  planner_agent_id: planner_agent
+  executor_agent_id: executor_agent
+  observer_agent_id: observer_agent
+  max_iterations: 5
+  done_signal: "DONE"
+  retry_signal: "RETRY"
+  continue_signal: "CONTINUE"
+hitl_enabled: false
