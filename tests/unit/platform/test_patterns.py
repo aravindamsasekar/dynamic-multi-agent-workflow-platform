@@ -14,10 +14,12 @@ from platform.core.models.workflow import PatternType, WorkflowDefinition, Workf
 from platform.llm.mock_provider import MockLLMProvider
 from platform.memory.in_memory_store import InMemoryStore
 from platform.patterns.parallel_specialist import ParallelSpecialistExecutor
+from platform.patterns.planner_executor_observer import PlannerExecutorObserverExecutor
 from platform.patterns.router import RouterExecutor
 from platform.policy.engine import PolicyEngine
 from platform.registries.agent_registry import AgentRegistry
 from platform.registries.tool_registry import ToolRegistry
+from platform.state.shared_state import SharedState
 
 
 # ---------------------------------------------------------------------------
@@ -51,11 +53,12 @@ def _context(
     workflow_definition: WorkflowDefinition,
     agent_registry: AgentRegistry,
     memory_store: InMemoryStore | None = None,
+    shared_state: SharedState | None = None,
 ) -> ExecutionContext:
     return ExecutionContext(
         run_id=_RUN_ID,
         workflow_definition=workflow_definition,
-        shared_state=None,
+        shared_state=shared_state,
         workflow_registry=None,
         agent_registry=agent_registry,
         tool_registry=ToolRegistry(),
@@ -331,13 +334,151 @@ class TestRouterExecutor:
 
 
 # ---------------------------------------------------------------------------
-# TestPlannerExecutorObserverExecutor — placeholder (Phase 6B)
+# PEO helpers
+# ---------------------------------------------------------------------------
+
+
+def _peo_workflow(
+    *,
+    max_iterations: int | None = None,
+    done_signal: str | None = None,
+) -> WorkflowDefinition:
+    cfg: dict = {
+        "planner_agent_id": "planner",
+        "executor_agent_id": "executor",
+        "observer_agent_id": "observer",
+    }
+    if max_iterations is not None:
+        cfg["max_iterations"] = max_iterations
+    if done_signal is not None:
+        cfg["done_signal"] = done_signal
+    return WorkflowDefinition(
+        workflow_id="wf-peo",
+        name="test-peo",
+        pattern=PatternType.PLANNER_EXECUTOR_OBSERVER,
+        pattern_config=cfg,
+    )
+
+
+def _peo_registry() -> AgentRegistry:
+    registry = AgentRegistry()
+    for aid in ("planner", "executor", "observer"):
+        registry.register(_agent(aid))
+    return registry
+
+
+# ---------------------------------------------------------------------------
+# TestPlannerExecutorObserverExecutor
 # ---------------------------------------------------------------------------
 
 
 class TestPlannerExecutorObserverExecutor:
-    # TODO: test execute() runs planner → executor → observer sequence
-    # TODO: test execute() exits loop when observer signals DONE
-    # TODO: test execute() respects max_iterations from pattern_config
-    # TODO: test execute() stores plan in shared_state
-    pass
+    async def test_execute_returns_executor_output_on_done(self):
+        llm = MockLLMProvider([
+            _response("step: solve the problem"),  # planner
+            _response("problem solved"),            # executor
+            _response("DONE"),                      # observer
+        ])
+        result = await PlannerExecutorObserverExecutor(llm).execute(
+            _context(_peo_workflow(), _peo_registry()), "do something"
+        )
+        assert result.output == "problem solved"
+        assert result.workflow_id == "wf-peo"
+        assert result.run_id == _RUN_ID
+
+    async def test_execute_retry_signal_continues_loop(self):
+        llm = MockLLMProvider([
+            _response("plan A"),    # planner iter 0
+            _response("result A"),  # executor iter 0
+            _response("RETRY"),     # observer iter 0
+            _response("plan B"),    # planner iter 1
+            _response("result B"),  # executor iter 1
+            _response("DONE"),      # observer iter 1
+        ])
+        result = await PlannerExecutorObserverExecutor(llm).execute(
+            _context(_peo_workflow(), _peo_registry()), "do something"
+        )
+        assert result.output == "result B"
+        assert len(result.agent_results) == 6  # 2 iterations × 3 agents
+
+    async def test_execute_continue_signal_continues_loop(self):
+        llm = MockLLMProvider([
+            _response("plan A"),    # planner iter 0
+            _response("result A"),  # executor iter 0
+            _response("CONTINUE"),  # observer iter 0
+            _response("plan B"),    # planner iter 1
+            _response("result B"),  # executor iter 1
+            _response("DONE"),      # observer iter 1
+        ])
+        result = await PlannerExecutorObserverExecutor(llm).execute(
+            _context(_peo_workflow(), _peo_registry()), "do something"
+        )
+        assert result.output == "result B"
+
+    async def test_execute_max_iterations_exceeded_raises(self):
+        llm = MockLLMProvider([
+            _response("plan"),    # planner iter 0
+            _response("result"),  # executor iter 0
+            _response("RETRY"),   # observer iter 0
+            _response("plan"),    # planner iter 1
+            _response("result"),  # executor iter 1
+            _response("RETRY"),   # observer iter 1 — no DONE → raises
+        ])
+        with pytest.raises(PatternExecutionError, match="exceeded"):
+            await PlannerExecutorObserverExecutor(llm).execute(
+                _context(_peo_workflow(max_iterations=2), _peo_registry()), "do something"
+            )
+
+    async def test_execute_agent_results_ordered_per_iteration(self):
+        llm = MockLLMProvider([
+            _response("plan A"),    # planner iter 0
+            _response("result A"),  # executor iter 0
+            _response("RETRY"),     # observer iter 0
+            _response("plan B"),    # planner iter 1
+            _response("result B"),  # executor iter 1
+            _response("DONE"),      # observer iter 1
+        ])
+        result = await PlannerExecutorObserverExecutor(llm).execute(
+            _context(_peo_workflow(), _peo_registry()), "do something"
+        )
+        assert len(result.agent_results) == 6
+        assert [r.agent_id for r in result.agent_results] == [
+            "planner", "executor", "observer",  # iter 0
+            "planner", "executor", "observer",  # iter 1
+        ]
+
+    async def test_execute_custom_done_signal(self):
+        llm = MockLLMProvider([
+            _response("plan"),      # planner
+            _response("answer"),    # executor
+            _response("COMPLETE"),  # observer — custom done signal
+        ])
+        result = await PlannerExecutorObserverExecutor(llm).execute(
+            _context(_peo_workflow(done_signal="COMPLETE"), _peo_registry()), "do something"
+        )
+        assert result.output == "answer"
+
+    async def test_execute_unrecognized_signal_treated_as_continue(self):
+        # "MAYBE" not recognized as DONE → loop continues → exhausts max_iterations=1 → raises
+        llm = MockLLMProvider([
+            _response("plan"),    # planner iter 0
+            _response("result"),  # executor iter 0
+            _response("MAYBE"),   # observer iter 0 — unrecognized, lenient continue
+        ])
+        with pytest.raises(PatternExecutionError, match="exceeded"):
+            await PlannerExecutorObserverExecutor(llm).execute(
+                _context(_peo_workflow(max_iterations=1), _peo_registry()), "do something"
+            )
+
+    async def test_execute_updates_shared_state_per_iteration(self):
+        llm = MockLLMProvider([
+            _response("plan"),     # planner
+            _response("outcome"),  # executor
+            _response("DONE"),     # observer
+        ])
+        state = SharedState()
+        await PlannerExecutorObserverExecutor(llm).execute(
+            _context(_peo_workflow(), _peo_registry(), shared_state=state), "do something"
+        )
+        assert state.get(_RUN_ID, "peo_iteration") == 0
+        assert state.get(_RUN_ID, "peo_last_executor_output") == "outcome"
