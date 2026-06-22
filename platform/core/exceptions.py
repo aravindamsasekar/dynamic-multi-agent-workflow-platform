@@ -5,6 +5,10 @@ class WorkflowNotFound(Exception):
     """Raised when a workflow_id is not found in WorkflowRegistry."""
 
 
+class RunNotFound(Exception):
+    """Raised when a run_id is not found in RunManager."""
+
+
 class AgentNotFound(Exception):
     """Raised when an agent_id is not found in AgentRegistry."""
 
