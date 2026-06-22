@@ -14,5 +14,4 @@ class ConsoleObserver(IObserver):
     """
 
     def on_event(self, event: WorkflowEvent) -> None:
-        # TODO: serialize event to JSON and print to stdout
-        raise NotImplementedError
+        print(event.model_dump_json())

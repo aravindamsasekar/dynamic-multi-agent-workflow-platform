@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 
 class Role(str, Enum):
+    SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
 
