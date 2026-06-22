@@ -15,8 +15,8 @@ class MCPAdapter(IToolAdapter):
 
     def __init__(self, server_url: str) -> None:
         self._server_url = server_url
-        # TODO: initialize MCP client
+        # TODO Phase 4: initialize MCP client using the mcp SDK
 
     async def execute(self, call: ToolCall) -> ToolResult:
-        # TODO: implement
-        raise NotImplementedError
+        # TODO Phase 4: implement MCP protocol call
+        raise NotImplementedError("MCPAdapter is not implemented in Phase 3")

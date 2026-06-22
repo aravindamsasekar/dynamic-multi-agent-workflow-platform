@@ -8,12 +8,14 @@ class TestParallelSpecialistExecutor:
     # TODO: test execute() calls ResultAggregator with all AgentResults
     # TODO: test execute() runs reviewer agent when reviewer_agent_id configured
     # TODO: test execute() returns WorkflowResult with aggregated output
+    pass
 
 
 class TestRouterExecutor:
     # TODO: test execute() calls classifier agent on input
     # TODO: test execute() dispatches to correct agent based on route label
     # TODO: test execute() raises PatternExecutionError on unknown route
+    pass
 
 
 class TestPlannerExecutorObserverExecutor:

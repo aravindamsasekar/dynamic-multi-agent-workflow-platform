@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import httpx
+
 from platform.core.interfaces.tool import IToolAdapter
 from platform.core.models.tool import ToolCall, ToolResult
 
@@ -22,10 +24,25 @@ class HTTPAdapter(IToolAdapter):
         headers: dict[str, str] | None = None,
     ) -> None:
         self._url = url
-        self._method = method
+        self._method = method.upper()
         self._headers = headers or {}
-        # TODO: initialize httpx.AsyncClient
 
     async def execute(self, call: ToolCall) -> ToolResult:
-        # TODO: implement
-        raise NotImplementedError
+        try:
+            async with httpx.AsyncClient() as client:
+                if self._method == "GET":
+                    response = await client.get(
+                        self._url,
+                        params=call.input,
+                        headers=self._headers,
+                    )
+                else:
+                    response = await client.post(
+                        self._url,
+                        json=call.input,
+                        headers=self._headers,
+                    )
+                response.raise_for_status()
+                return ToolResult(tool_use_id=call.tool_use_id, content=response.text)
+        except httpx.HTTPError as exc:
+            return ToolResult(tool_use_id=call.tool_use_id, content=str(exc), is_error=True)

@@ -19,5 +19,8 @@ class MockAdapter(IToolAdapter):
         self._is_error = is_error
 
     async def execute(self, call: ToolCall) -> ToolResult:
-        # TODO: implement
-        raise NotImplementedError
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            content=self._response,
+            is_error=self._is_error,
+        )

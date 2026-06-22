@@ -9,6 +9,7 @@ class TestConfigLoader:
     # TODO: test _load_tools() instantiates MockAdapter for adapter_type: mock
     # TODO: test _load_tools() instantiates HTTPAdapter for adapter_type: http
     # TODO: test _load_tools() instantiates MCPAdapter for adapter_type: mcp
+    pass
 
 
 class TestConfigValidator:
