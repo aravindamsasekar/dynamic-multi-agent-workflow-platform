@@ -187,16 +187,17 @@ class TestConfigLoader:
 
         assert ag_reg.list_all() == []
 
-    def test_load_all_invalid_workflow_raises_config_validation_error(
-        self, tmp_path: Path
+    def test_load_all_skips_invalid_workflow_with_warning(
+        self, tmp_path: Path, capsys
     ) -> None:
         _make_workflow_dir(
             tmp_path, "bad-wf",
             workflow_yaml="name: Missing ID\npattern: router\n",  # no workflow_id
         )
-        loader, _, _, _ = _make_loader(tmp_path)
-        with pytest.raises(ConfigValidationError, match="workflow_id"):
-            loader.load_all(tmp_path)
+        loader, wf_reg, _, _ = _make_loader(tmp_path)
+        loader.load_all(tmp_path)  # must not raise
+        assert wf_reg.list_all() == []  # invalid dir was skipped
+        assert "bad-wf" in capsys.readouterr().err
 
     def test_load_all_skips_non_directory_entries(self, tmp_path: Path) -> None:
         _make_workflow_dir(tmp_path, "test-wf")

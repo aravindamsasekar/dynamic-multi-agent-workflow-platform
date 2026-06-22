@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
+import sys
+
 import yaml
 
 from platform.config.validator import ConfigValidator
@@ -70,7 +72,13 @@ class ConfigLoader:
         """Scan workflows_dir and load all workflow definitions into registries."""
         for workflow_dir in sorted(workflows_dir.iterdir()):
             if workflow_dir.is_dir():
-                self._load_workflow(workflow_dir)
+                try:
+                    self._load_workflow(workflow_dir)
+                except Exception as exc:
+                    print(
+                        f"[WARNING] Skipping '{workflow_dir.name}': {exc}",
+                        file=sys.stderr,
+                    )
 
     def load_one(self, workflow_dir: Path) -> None:
         """Load a single workflow directory into registries."""

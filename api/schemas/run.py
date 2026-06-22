@@ -22,3 +22,11 @@ class RunStatusResponse(BaseModel):
     status: str
     output: str | None = None
     error: str | None = None
+
+
+class ApprovalRequest(BaseModel):
+    comment: str = ""
+
+
+class RejectionRequest(BaseModel):
+    reason: str = ""
