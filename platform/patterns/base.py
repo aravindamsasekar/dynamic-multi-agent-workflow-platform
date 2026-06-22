@@ -17,6 +17,6 @@ class IPatternExecutor(ABC):
     """
 
     @abstractmethod
-    async def execute(self, context: ExecutionContext) -> WorkflowResult:
+    async def execute(self, context: ExecutionContext, workflow_input: str) -> WorkflowResult:
         """Execute the pattern and return the final workflow result."""
         ...

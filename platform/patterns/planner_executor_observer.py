@@ -20,6 +20,6 @@ class PlannerExecutorObserverExecutor(IPatternExecutor):
     3. Return WorkflowResult after all steps complete or max_iterations reached
     """
 
-    async def execute(self, context: ExecutionContext) -> WorkflowResult:
+    async def execute(self, context: ExecutionContext, workflow_input: str) -> WorkflowResult:
         # TODO: implement
         raise NotImplementedError
