@@ -12,6 +12,7 @@ class AdapterType(str, Enum):
     MOCK = "mock"
     HTTP = "http"
     MCP = "mcp"
+    GITHUB = "github"
 
 
 class ToolDefinition(BaseModel):

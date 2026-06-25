@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -28,6 +29,8 @@ from platform.core.models.message import (
 )
 from platform.core.models.workflow import WorkflowResult
 from platform.memory.in_memory_store import InMemoryStore
+from platform.orchestrator.orchestrator import Orchestrator
+from platform.orchestrator.run_manager import RunManager
 from platform.patterns.parallel_specialist import ParallelSpecialistExecutor
 from platform.patterns.planner_executor_observer import PlannerExecutorObserverExecutor
 from platform.patterns.router import RouterExecutor
@@ -35,6 +38,7 @@ from platform.policy.engine import PolicyEngine
 from platform.registries.agent_registry import AgentRegistry
 from platform.registries.tool_registry import ToolRegistry
 from platform.registries.workflow_registry import WorkflowRegistry
+from platform.state.shared_state import SharedState
 from platform.llm.mock_provider import MockLLMProvider
 
 _WORKFLOWS_DIR = Path(__file__).resolve().parent.parent.parent / "workflows"
@@ -283,3 +287,172 @@ class TestResearchWorkflow:
                 _context(wf_reg, ag_reg, tl_reg, "research_workflow"),
                 "Research topic.",
             )
+
+
+# ---------------------------------------------------------------------------
+# TestPRReviewWorkflow
+# ---------------------------------------------------------------------------
+
+
+def _make_github_client(response_text: str = "{}") -> MagicMock:
+    """AsyncClient mock that returns a fixed response for any GET request."""
+    mock_response = MagicMock()
+    mock_response.text = response_text
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.get = AsyncMock(return_value=mock_response)
+    return mock_client
+
+
+_PR_INPUT = '{"owner": "octocat", "repo": "Hello-World", "pull_number": 42}'
+_GITHUB_PATCH = "platform.tools.github_adapter.httpx.AsyncClient"
+
+
+class TestPRReviewWorkflow:
+    """Exercises the pr_review workflow: single GitHub fetch agent + review agent.
+
+    GitHub HTTP calls are intercepted via mock — no real API calls are made.
+    """
+
+    async def test_produces_workflow_result(self) -> None:
+        wf_reg, ag_reg, tl_reg = _load("pr_review")
+        llm = MockLLMProvider([
+            # github_fetch_agent: 3 sequential tool calls then summary
+            _tool_use("tu-1", "github_get_pr", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _tool_use("tu-2", "github_get_files", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _tool_use("tu-3", "github_get_diff", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _text("PR #42: Add feature. 2 files changed (+50/-10)."),
+            # review_agent: final review
+            _text("LGTM: clean implementation with good test coverage."),
+        ])
+        with patch(_GITHUB_PATCH, return_value=_make_github_client()):
+            result = await ParallelSpecialistExecutor(llm).execute(
+                _context(wf_reg, ag_reg, tl_reg, "pr_review"),
+                _PR_INPUT,
+            )
+        assert isinstance(result, WorkflowResult)
+        assert result.workflow_id == "pr_review"
+        assert result.output == "LGTM: clean implementation with good test coverage."
+
+    async def test_result_contains_both_agents(self) -> None:
+        wf_reg, ag_reg, tl_reg = _load("pr_review")
+        llm = MockLLMProvider([
+            _tool_use("tu-1", "github_get_pr", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _tool_use("tu-2", "github_get_files", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _tool_use("tu-3", "github_get_diff", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _text("Fetched PR data."),
+            _text("Review: request changes."),
+        ])
+        with patch(_GITHUB_PATCH, return_value=_make_github_client()):
+            result = await ParallelSpecialistExecutor(llm).execute(
+                _context(wf_reg, ag_reg, tl_reg, "pr_review"),
+                _PR_INPUT,
+            )
+        agent_ids = [r.agent_id for r in result.agent_results]
+        assert "github_fetch_agent" in agent_ids
+        assert "review_agent" in agent_ids
+        assert len(result.agent_results) == 2
+
+    async def test_fetch_agent_makes_three_tool_calls(self) -> None:
+        wf_reg, ag_reg, tl_reg = _load("pr_review")
+        llm = MockLLMProvider([
+            _tool_use("tu-1", "github_get_pr", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _tool_use("tu-2", "github_get_files", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _tool_use("tu-3", "github_get_diff", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _text("All data collected."),
+            _text("Looks good."),
+        ])
+        with patch(_GITHUB_PATCH, return_value=_make_github_client()):
+            result = await ParallelSpecialistExecutor(llm).execute(
+                _context(wf_reg, ag_reg, tl_reg, "pr_review"),
+                _PR_INPUT,
+            )
+        fetch_result = next(r for r in result.agent_results if r.agent_id == "github_fetch_agent")
+        assert fetch_result.tool_calls_made == 3
+
+    async def test_review_agent_receives_fetch_output(self) -> None:
+        wf_reg, ag_reg, tl_reg = _load("pr_review")
+        fetch_summary = "Title: Add feature. Files: main.py (+20). Diff: +def add_feature()."
+        llm = MockLLMProvider([
+            _tool_use("tu-1", "github_get_pr", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _tool_use("tu-2", "github_get_files", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _tool_use("tu-3", "github_get_diff", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _text(fetch_summary),
+            _text("Approved: minimal change, well-scoped."),
+        ])
+        with patch(_GITHUB_PATCH, return_value=_make_github_client()):
+            result = await ParallelSpecialistExecutor(llm).execute(
+                _context(wf_reg, ag_reg, tl_reg, "pr_review"),
+                _PR_INPUT,
+            )
+        fetch_result = next(r for r in result.agent_results if r.agent_id == "github_fetch_agent")
+        assert fetch_result.output == fetch_summary
+        assert result.output == "Approved: minimal change, well-scoped."
+
+    async def test_owner_repo_pull_number_propagate_to_github_urls(self) -> None:
+        # Proves that owner/repo/pull_number from the tool call args reach the
+        # correct GitHub API URLs — the critical end-to-end propagation check.
+        wf_reg, ag_reg, tl_reg = _load("pr_review")
+        mock_gh = _make_github_client()
+        llm = MockLLMProvider([
+            _tool_use("tu-1", "github_get_pr",    {"owner": "microsoft", "repo": "vscode", "pull_number": 99}),
+            _tool_use("tu-2", "github_get_files", {"owner": "microsoft", "repo": "vscode", "pull_number": 99}),
+            _tool_use("tu-3", "github_get_diff",  {"owner": "microsoft", "repo": "vscode", "pull_number": 99}),
+            _text("PR data collected."),
+            _text("Looks good."),
+        ])
+        with patch(_GITHUB_PATCH, return_value=mock_gh):
+            await ParallelSpecialistExecutor(llm).execute(
+                _context(wf_reg, ag_reg, tl_reg, "pr_review"),
+                '{"owner": "microsoft", "repo": "vscode", "pull_number": 99}',
+            )
+
+        called_urls = [call[0][0] for call in mock_gh.get.call_args_list]
+        assert len(called_urls) == 3
+        assert "https://api.github.com/repos/microsoft/vscode/pulls/99" in called_urls
+        assert "https://api.github.com/repos/microsoft/vscode/pulls/99/files" in called_urls
+
+    async def test_dict_input_via_orchestrator_reaches_github_urls(self) -> None:
+        # Full end-to-end: POST /runs body → Orchestrator (dict→JSON) → agent →
+        # tool calls → GitHubAdapter → correct API URLs.
+        wf_reg, ag_reg, tl_reg = _load("pr_review")
+        shared_state = SharedState()
+        run_manager = RunManager()
+        mock_gh = _make_github_client()
+        llm = MockLLMProvider([
+            _tool_use("tu-1", "github_get_pr",    {"owner": "octocat", "repo": "Hello-World", "pull_number": 1}),
+            _tool_use("tu-2", "github_get_files", {"owner": "octocat", "repo": "Hello-World", "pull_number": 1}),
+            _tool_use("tu-3", "github_get_diff",  {"owner": "octocat", "repo": "Hello-World", "pull_number": 1}),
+            _text("Fetched all PR data."),
+            _text("Approved."),
+        ])
+        orch = Orchestrator(
+            workflow_registry=wf_reg,
+            agent_registry=ag_reg,
+            tool_registry=tl_reg,
+            memory_store=InMemoryStore(),
+            policy_engine=PolicyEngine(),
+            observer=_CapturingObserver(),
+            run_manager=run_manager,
+            llm_provider=llm,
+            shared_state=shared_state,
+        )
+        structured_input = {"owner": "octocat", "repo": "Hello-World", "pull_number": 1}
+        with patch(_GITHUB_PATCH, return_value=mock_gh):
+            result = await orch.run("pr_review", structured_input)
+
+        # Workflow completes successfully
+        assert result.workflow_id == "pr_review"
+        assert result.output == "Approved."
+
+        # Structured input preserved in SharedState
+        assert shared_state.get(result.run_id, "workflow_input") == structured_input
+
+        # Correct GitHub API URLs were called
+        called_urls = [call[0][0] for call in mock_gh.get.call_args_list]
+        assert len(called_urls) == 3
+        assert "https://api.github.com/repos/octocat/Hello-World/pulls/1" in called_urls
+        assert "https://api.github.com/repos/octocat/Hello-World/pulls/1/files" in called_urls

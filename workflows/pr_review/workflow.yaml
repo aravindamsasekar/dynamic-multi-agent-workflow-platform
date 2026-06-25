@@ -1,1 +1,12 @@
-# TODO: Define PR Review workflow configuration
+workflow_id: pr_review
+name: PR Review
+description: >
+  Reviews a GitHub pull request by fetching PR metadata, changed files, and diff
+  through a single fetch agent, then generating a structured code review.
+pattern: parallel_specialist
+agent_ids:
+  - github_fetch_agent
+pattern_config:
+  strategy: concatenate
+  reviewer_agent_id: review_agent
+hitl_enabled: false

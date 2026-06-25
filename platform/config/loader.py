@@ -14,6 +14,7 @@ from platform.core.interfaces.tool import IToolAdapter
 from platform.core.models.agent import AgentDefinition
 from platform.core.models.tool import AdapterType, ToolDefinition
 from platform.core.models.workflow import WorkflowDefinition
+from platform.tools.github_adapter import GitHubAdapter
 from platform.tools.http_adapter import HTTPAdapter
 from platform.tools.mcp_adapter import MCPAdapter
 from platform.tools.mock_adapter import MockAdapter
@@ -40,10 +41,15 @@ def _build_mcp_adapter(cfg: dict[str, Any]) -> IToolAdapter:
     return MCPAdapter(server_url=cfg["server_url"])
 
 
+def _build_github_adapter(cfg: dict[str, Any]) -> IToolAdapter:
+    return GitHubAdapter(operation=cfg["operation"])
+
+
 _ADAPTER_BUILDERS: dict[AdapterType, _AdapterBuilder] = {
     AdapterType.MOCK: _build_mock_adapter,
     AdapterType.HTTP: _build_http_adapter,
     AdapterType.MCP: _build_mcp_adapter,
+    AdapterType.GITHUB: _build_github_adapter,
 }
 
 

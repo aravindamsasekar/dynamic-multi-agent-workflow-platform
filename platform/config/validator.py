@@ -94,3 +94,7 @@ class ConfigValidator:
                 raise ConfigValidationError(
                     f"{prefix}Tool '{name}' (mcp) missing adapter_config.server_url"
                 )
+            if tool["adapter_type"] == AdapterType.GITHUB.value and "operation" not in cfg:
+                raise ConfigValidationError(
+                    f"{prefix}Tool '{name}' (github) missing adapter_config.operation"
+                )

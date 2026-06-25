@@ -1,1 +1,57 @@
-# TODO: Define PR Review tool definitions
+tools:
+  - name: github_get_pr
+    description: Fetches pull request metadata including title, body, state, and author.
+    input_schema:
+      type: object
+      properties:
+        owner:
+          type: string
+          description: Repository owner or organization
+        repo:
+          type: string
+          description: Repository name
+        pull_number:
+          type: integer
+          description: Pull request number
+      required: [owner, repo, pull_number]
+    adapter_type: github
+    adapter_config:
+      operation: get_pull_request
+
+  - name: github_get_files
+    description: Lists files changed in the pull request with additions, deletions, and patch status.
+    input_schema:
+      type: object
+      properties:
+        owner:
+          type: string
+          description: Repository owner or organization
+        repo:
+          type: string
+          description: Repository name
+        pull_number:
+          type: integer
+          description: Pull request number
+      required: [owner, repo, pull_number]
+    adapter_type: github
+    adapter_config:
+      operation: get_changed_files
+
+  - name: github_get_diff
+    description: Returns the raw unified diff (patch) for all changed files in the pull request.
+    input_schema:
+      type: object
+      properties:
+        owner:
+          type: string
+          description: Repository owner or organization
+        repo:
+          type: string
+          description: Repository name
+        pull_number:
+          type: integer
+          description: Pull request number
+      required: [owner, repo, pull_number]
+    adapter_type: github
+    adapter_config:
+      operation: get_diff

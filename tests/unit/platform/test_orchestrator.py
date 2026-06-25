@@ -113,3 +113,84 @@ class TestOrchestrator:
         orch, _, _ = _make_orchestrator(llm)
         with pytest.raises(WorkflowNotFound):
             await orch.run("nonexistent_wf", "input")
+
+    async def test_run_accepts_dict_input(self) -> None:
+        llm = MockLLMProvider([_text("dict result")])
+        orch, _, _ = _make_orchestrator(llm)
+        result = await orch.run("test_wf", {"owner": "octocat", "repo": "Hello-World", "pull_number": 1})
+        assert isinstance(result, WorkflowResult)
+        assert "dict result" in result.output
+
+    async def test_dict_input_stored_in_shared_state(self) -> None:
+        llm = MockLLMProvider([_text("ok")])
+        shared_state = SharedState()
+        wf_registry = WorkflowRegistry()
+        ag_registry = AgentRegistry()
+        wf_registry.register(
+            WorkflowDefinition(
+                workflow_id="test_wf",
+                name="Test Workflow",
+                pattern=PatternType.PARALLEL_SPECIALIST,
+                agent_ids=["agent_a"],
+                pattern_config={"strategy": "concatenate"},
+            )
+        )
+        ag_registry.register(
+            AgentDefinition(agent_id="agent_a", name="Agent A", system_prompt="You are helpful.", tool_names=[])
+        )
+        orch = Orchestrator(
+            workflow_registry=wf_registry,
+            agent_registry=ag_registry,
+            tool_registry=ToolRegistry(),
+            memory_store=InMemoryStore(),
+            policy_engine=PolicyEngine(),
+            observer=_CapturingObserver(),
+            run_manager=RunManager(),
+            llm_provider=llm,
+            shared_state=shared_state,
+        )
+        structured = {"owner": "octocat", "repo": "Hello-World", "pull_number": 1}
+        result = await orch.run("test_wf", structured)
+        stored = shared_state.get(result.run_id, "workflow_input")
+        assert stored == structured
+
+    async def test_string_input_not_stored_in_shared_state(self) -> None:
+        llm = MockLLMProvider([_text("ok")])
+        shared_state = SharedState()
+        wf_registry = WorkflowRegistry()
+        ag_registry = AgentRegistry()
+        wf_registry.register(
+            WorkflowDefinition(
+                workflow_id="test_wf",
+                name="Test Workflow",
+                pattern=PatternType.PARALLEL_SPECIALIST,
+                agent_ids=["agent_a"],
+                pattern_config={"strategy": "concatenate"},
+            )
+        )
+        ag_registry.register(
+            AgentDefinition(agent_id="agent_a", name="Agent A", system_prompt="You are helpful.", tool_names=[])
+        )
+        orch = Orchestrator(
+            workflow_registry=wf_registry,
+            agent_registry=ag_registry,
+            tool_registry=ToolRegistry(),
+            memory_store=InMemoryStore(),
+            policy_engine=PolicyEngine(),
+            observer=_CapturingObserver(),
+            run_manager=RunManager(),
+            llm_provider=llm,
+            shared_state=shared_state,
+        )
+        result = await orch.run("test_wf", "plain string input")
+        assert shared_state.get(result.run_id, "workflow_input") is None
+
+    async def test_dict_input_serialised_to_json_for_run_record(self) -> None:
+        import json
+        llm = MockLLMProvider([_text("ok")])
+        orch, run_manager, _ = _make_orchestrator(llm)
+        structured = {"owner": "octocat", "repo": "Hello-World", "pull_number": 1}
+        result = await orch.run("test_wf", structured)
+        run = run_manager.get_run(result.run_id)
+        # The run record stores a JSON string, not a dict
+        assert run.input == json.dumps(structured)

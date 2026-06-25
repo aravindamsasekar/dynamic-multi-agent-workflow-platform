@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 from platform.core.interfaces.llm import ILLMProvider
 from platform.core.models.context import ExecutionContext
 from platform.core.models.events import (
@@ -48,14 +51,29 @@ class Orchestrator:
             PatternType.PLANNER_EXECUTOR_OBSERVER: PlannerExecutorObserverExecutor(llm_provider),
         }
 
-    async def run(self, workflow_id: str, input: str) -> WorkflowResult:
+    async def run(self, workflow_id: str, input: str | dict[str, Any]) -> WorkflowResult:
         """Execute a workflow by id and return the final result.
+
+        Accepts either a plain string (existing workflows) or a structured dict
+        (e.g. pr_review).  Dict inputs are JSON-serialised to a string for the
+        agent pipeline and also stored in SharedState under "workflow_input" so
+        downstream components can retrieve the original structure if needed.
 
         Raises WorkflowNotFound if workflow_id is not registered.
         Re-raises any exception from the pattern executor after marking the run FAILED.
         """
+        # Normalise to string for the pipeline; preserve original dict in SharedState.
+        if isinstance(input, dict):
+            workflow_input_str: str = json.dumps(input)
+        else:
+            workflow_input_str = input
+
         wf_def = self._workflow_registry.get(workflow_id)  # type: ignore[attr-defined]
-        run = self._run_manager.create_run(workflow_id, input)  # type: ignore[attr-defined]
+        run = self._run_manager.create_run(workflow_id, workflow_input_str)  # type: ignore[attr-defined]
+
+        if isinstance(input, dict):
+            self._shared_state.set(run.run_id, "workflow_input", input)  # type: ignore[attr-defined]
+
         self._run_manager.update_status(run.run_id, RunStatus.RUNNING)  # type: ignore[attr-defined]
         self._observer.on_event(  # type: ignore[attr-defined]
             WorkflowStartedEvent(run_id=run.run_id, data={"workflow_id": workflow_id})
@@ -63,7 +81,7 @@ class Orchestrator:
         context = self._build_context(run.run_id, wf_def)
         executor = self._executors[wf_def.pattern]
         try:
-            result = await executor.execute(context, input)
+            result = await executor.execute(context, workflow_input_str)
             self._run_manager.complete(run.run_id, result.output)  # type: ignore[attr-defined]
             self._observer.on_event(  # type: ignore[attr-defined]
                 WorkflowCompletedEvent(run_id=run.run_id, data={"output": result.output})

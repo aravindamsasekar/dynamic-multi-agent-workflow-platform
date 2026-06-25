@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from typing import Any, Union
+
 from pydantic import BaseModel
 
 
 class RunRequest(BaseModel):
     workflow_id: str
-    input: str
+    # Accept either a plain string (existing workflows) or a structured dict
+    # (structured workflows such as pr_review).  The orchestrator normalises
+    # dicts to a JSON string before handing off to pattern executors.
+    input: Union[str, dict[str, Any]]
 
 
 class RunResponse(BaseModel):

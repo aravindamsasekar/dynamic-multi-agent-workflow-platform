@@ -23,7 +23,7 @@ platform/
   policy/                   # PolicyEngine + ContentFilterRule
   registries/               # WorkflowRegistry, AgentRegistry, ToolRegistry
   state/                    # SharedState — per-run cross-agent key-value store
-  tools/                    # MockAdapter, HTTPAdapter, MCPAdapter
+  tools/                    # MockAdapter, HTTPAdapter, GitHubAdapter, MCPAdapter
 workflows/                  # YAML workflow definitions (one folder per workflow)
 tests/
   unit/                     # Fast unit tests — no real LLM calls
@@ -51,6 +51,9 @@ Copy `.env.example` to `.env` and set your API key:
 ```
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o-mini        # optional, defaults to gpt-4o-mini
+
+# Required for the pr_review workflow (see GitHub Setup below)
+GITHUB_TOKEN=github_pat_...
 ```
 
 ## Running Tests
@@ -71,6 +74,22 @@ The server requires `OPENAI_API_KEY` to be set. It will refuse to start without 
 
 Interactive docs: http://localhost:8000/docs
 
+## GitHub Setup
+
+The `pr_review` workflow calls the GitHub REST API. Configure authentication in `.env`:
+
+```
+GITHUB_TOKEN=github_pat_...
+```
+
+**Public repositories** — `GITHUB_TOKEN` is optional. Unauthenticated requests work but are rate-limited to 60 requests/hour per IP.
+
+**Private repositories** — `GITHUB_TOKEN` is required. Create a fine-grained personal access token at GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens. Grant read-only access to:
+- **Repository contents** — required to read diffs
+- **Pull requests** — required to read PR metadata and file lists
+
+Authenticated requests are rate-limited to 5,000 requests/hour.
+
 ## Demo Workflows
 
 ### List all workflows
@@ -85,6 +104,63 @@ curl http://localhost:8000/workflows/
   {"workflow_id": "customer_support",   "name": "Customer Support Router", ...},
   {"workflow_id": "research_workflow",  "name": "Research Workflow", ...}
 ]
+```
+
+### PR Review — parallel_specialist (GitHub integration)
+
+Fetches PR metadata, changed files, and unified diff from GitHub, then generates a structured code review.
+
+**Input contract** — pass `input` as a structured object (not a string):
+
+| Field | Type | Description |
+|---|---|---|
+| `owner` | string | Repository owner or organization |
+| `repo` | string | Repository name |
+| `pull_number` | integer | Pull request number |
+
+**curl:**
+
+```bash
+curl -s -X POST http://localhost:8000/runs/ \
+  -H "Content-Type: application/json" \
+  -d '{"workflow_id": "pr_review", "input": {"owner": "octocat", "repo": "Hello-World", "pull_number": 1}}' \
+  | python -m json.tool
+```
+
+**PowerShell:**
+
+```powershell
+Invoke-RestMethod -Method POST `
+  -Uri "http://localhost:8000/runs/" `
+  -ContentType "application/json" `
+  -Body '{"workflow_id":"pr_review","input":{"owner":"octocat","repo":"Hello-World","pull_number":1}}'
+```
+
+**Execution flow:**
+
+```
+POST /runs/  {"workflow_id": "pr_review", "input": {"owner": "octocat", "repo": "Hello-World", "pull_number": 1}}
+  → Orchestrator serialises dict → JSON string; stores original dict in SharedState["workflow_input"]
+  → ParallelSpecialistExecutor selected
+  → github_fetch_agent receives JSON string as its user message
+      → calls github_get_pr    → GET /repos/octocat/Hello-World/pulls/1
+      → calls github_get_files → GET /repos/octocat/Hello-World/pulls/1/files
+      → calls github_get_diff  → GET /repos/octocat/Hello-World/pulls/1  (Accept: application/vnd.github.diff)
+      → returns structured summary of all three responses
+  → review_agent receives the summary
+      → returns structured review (Summary / Changes / Code Quality / Verdict)
+  → RunManager marks run COMPLETED
+```
+
+**Expected response:**
+
+```json
+{
+  "run_id": "...",
+  "workflow_id": "pr_review",
+  "status": "completed",
+  "output": "## Summary\nThis PR adds...\n\n## Verdict\nApprove — ..."
+}
 ```
 
 ### Incident Commander — parallel_specialist
