@@ -134,6 +134,7 @@ class AgentRuntime:
                         run_id=self._run_id,
                         data={
                             "tool_name": tc.name,
+                            "tool_input": tc.input,
                             "result": result.content,
                             "is_error": result.is_error,
                         },

@@ -76,7 +76,10 @@ class Orchestrator:
 
         self._run_manager.update_status(run.run_id, RunStatus.RUNNING)  # type: ignore[attr-defined]
         self._observer.on_event(  # type: ignore[attr-defined]
-            WorkflowStartedEvent(run_id=run.run_id, data={"workflow_id": workflow_id})
+            WorkflowStartedEvent(
+                run_id=run.run_id,
+                data={"workflow_id": workflow_id, "input": workflow_input_str},
+            )
         )
         context = self._build_context(run.run_id, wf_def)
         executor = self._executors[wf_def.pattern]
