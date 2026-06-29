@@ -39,7 +39,11 @@ def _build_http_adapter(cfg: dict[str, Any]) -> IToolAdapter:
 
 
 def _build_mcp_adapter(cfg: dict[str, Any]) -> IToolAdapter:
-    return MCPAdapter(server_url=cfg["server_url"])
+    return MCPAdapter(
+        server_command=cfg["server_command"],
+        server_args=cfg.get("server_args", []),
+        tool_name=cfg["tool_name"],
+    )
 
 
 def _build_github_adapter(cfg: dict[str, Any]) -> IToolAdapter:

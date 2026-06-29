@@ -14,3 +14,6 @@ class IToolAdapter(ABC):
     async def execute(self, call: ToolCall) -> ToolResult:
         """Execute a tool call and return the result."""
         ...
+
+    async def close(self) -> None:
+        """Release any resources held by this adapter. No-op by default."""

@@ -1,1 +1,20 @@
-# TODO: Define DevOps Remediation tool definitions
+tools:
+  - name: filesystem_read_file
+    description: >
+      Read the contents of a file using the MCP filesystem server.
+      Returns the raw text content of the specified file path.
+    input_schema:
+      type: object
+      properties:
+        path:
+          type: string
+          description: Path to the file to read (relative to the server root)
+      required: [path]
+    adapter_type: mcp
+    adapter_config:
+      server_command: npx
+      server_args:
+        - -y
+        - "@modelcontextprotocol/server-filesystem"
+        - "."
+      tool_name: read_file

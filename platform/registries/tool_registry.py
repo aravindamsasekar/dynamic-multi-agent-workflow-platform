@@ -47,6 +47,10 @@ class ToolRegistry:
         """Return True if a tool with the given name is registered."""
         return tool_name in self._store
 
+    def get_all_adapters(self) -> dict[str, IToolAdapter]:
+        """Return a snapshot of all registered adapters keyed by tool name."""
+        return dict(self._store)
+
     def clear(self) -> None:
         """Remove all registered tool adapters and definitions."""
         self._store.clear()

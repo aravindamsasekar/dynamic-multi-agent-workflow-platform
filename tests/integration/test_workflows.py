@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from platform.config.loader import ConfigLoader
 from platform.core.exceptions import PatternExecutionError
@@ -44,6 +44,7 @@ from platform.registries.tool_registry import ToolRegistry
 from platform.registries.workflow_registry import WorkflowRegistry
 from platform.state.shared_state import SharedState
 from platform.llm.mock_provider import MockLLMProvider
+from platform.tools.mcp_adapter import MCPAdapter
 
 _WORKFLOWS_DIR = Path(__file__).resolve().parent.parent.parent / "workflows"
 
@@ -677,3 +678,143 @@ class TestPRReviewWithKnowledge:
             )
         assert result.output == "LGTM: clean implementation with good test coverage."
         assert result.workflow_id == "pr_review"
+
+
+# ---------------------------------------------------------------------------
+# TestDevOpsRemediationWorkflow
+# ---------------------------------------------------------------------------
+
+_MCP_STDIO_PATCH = "platform.tools.mcp_connection_manager.stdio_client"
+_MCP_SESSION_PATCH = "platform.tools.mcp_connection_manager.ClientSession"
+_MCP_PARAMS_PATCH = "platform.tools.mcp_connection_manager.StdioServerParameters"
+
+
+def _make_mcp_session(tool_names: list[str] | None = None, call_text: str = "file contents") -> MagicMock:
+    """Return a mocked MCP ClientSession."""
+    tools = []
+    for name in (tool_names or ["read_file"]):
+        t = MagicMock()
+        t.name = name
+        t.description = ""
+        t.inputSchema = {"type": "object"}
+        tools.append(t)
+    list_result = MagicMock()
+    list_result.tools = tools
+
+    content_item = MagicMock()
+    content_item.text = call_text
+    call_result = MagicMock()
+    call_result.content = [content_item]
+    call_result.isError = False
+
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.initialize = AsyncMock()
+    session.list_tools = AsyncMock(return_value=list_result)
+    session.call_tool = AsyncMock(return_value=call_result)
+    return session
+
+
+def _make_mcp_stdio() -> MagicMock:
+    """Return a mocked stdio_client context manager."""
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=(AsyncMock(), AsyncMock()))
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return cm
+
+
+class TestDevOpsRemediationWorkflow:
+    """Integration tests for the devops_remediation MCP filesystem workflow."""
+
+    def test_workflow_loads_without_error(self) -> None:
+        wf_reg, ag_reg, tl_reg = _load("devops_remediation")
+        assert wf_reg.exists("devops_remediation")
+
+    def test_file_analyst_agent_registered(self) -> None:
+        _, ag_reg, _ = _load("devops_remediation")
+        agent = ag_reg.get("file_analyst_agent")
+        assert agent.agent_id == "file_analyst_agent"
+
+    def test_filesystem_read_file_tool_registered(self) -> None:
+        _, _, tl_reg = _load("devops_remediation")
+        assert tl_reg.exists("filesystem_read_file")
+
+    def test_filesystem_read_file_is_mcp_adapter(self) -> None:
+        _, _, tl_reg = _load("devops_remediation")
+        adapter = tl_reg.get("filesystem_read_file")
+        assert isinstance(adapter, MCPAdapter)
+
+    def test_mcp_adapter_tool_name_is_read_file(self) -> None:
+        _, _, tl_reg = _load("devops_remediation")
+        adapter = tl_reg.get("filesystem_read_file")
+        assert isinstance(adapter, MCPAdapter)
+        assert adapter._tool_name == "read_file"
+
+    def test_file_analyst_agent_has_filesystem_read_file_tool(self) -> None:
+        _, ag_reg, _ = _load("devops_remediation")
+        agent = ag_reg.get("file_analyst_agent")
+        assert "filesystem_read_file" in agent.tool_names
+
+    async def test_execute_with_mocked_mcp_returns_summary(self) -> None:
+        wf_reg, ag_reg, tl_reg = _load("devops_remediation")
+        session = _make_mcp_session(call_text="# README\nThis is the README file.")
+        stdio = _make_mcp_stdio()
+        llm = MockLLMProvider([
+            _tool_use("mcp-1", "filesystem_read_file", {"path": "README.md"}),
+            _text("Purpose: project documentation. Key contents: README with project overview."),
+        ])
+        with patch(_MCP_PARAMS_PATCH), \
+             patch(_MCP_SESSION_PATCH, return_value=session), \
+             patch(_MCP_STDIO_PATCH, return_value=stdio):
+            result = await ParallelSpecialistExecutor(llm).execute(
+                _context(wf_reg, ag_reg, tl_reg, "devops_remediation"),
+                "Summarize README.md",
+            )
+        assert isinstance(result, WorkflowResult)
+        assert result.workflow_id == "devops_remediation"
+        assert "README" in result.output
+
+    async def test_mcp_tool_call_arguments_forwarded(self) -> None:
+        wf_reg, ag_reg, tl_reg = _load("devops_remediation")
+        session = _make_mcp_session()
+        stdio = _make_mcp_stdio()
+        llm = MockLLMProvider([
+            _tool_use("mcp-1", "filesystem_read_file", {"path": "pyproject.toml"}),
+            _text("Analysis complete."),
+        ])
+        with patch(_MCP_PARAMS_PATCH), \
+             patch(_MCP_SESSION_PATCH, return_value=session), \
+             patch(_MCP_STDIO_PATCH, return_value=stdio):
+            await ParallelSpecialistExecutor(llm).execute(
+                _context(wf_reg, ag_reg, tl_reg, "devops_remediation"),
+                "Analyse pyproject.toml",
+            )
+        session.call_tool.assert_called_once_with(
+            "read_file", arguments={"path": "pyproject.toml"}
+        )
+
+    async def test_mcp_tool_error_propagates_as_error_tool_result(self) -> None:
+        wf_reg, ag_reg, tl_reg = _load("devops_remediation")
+        session = _make_mcp_session()
+        stdio = _make_mcp_stdio()
+
+        error_content = MagicMock()
+        error_content.text = "File not found: missing.txt"
+        error_result = MagicMock()
+        error_result.content = [error_content]
+        error_result.isError = True
+        session.call_tool = AsyncMock(return_value=error_result)
+
+        llm = MockLLMProvider([
+            _tool_use("mcp-1", "filesystem_read_file", {"path": "missing.txt"}),
+            _text("Could not read file — it does not exist."),
+        ])
+        with patch(_MCP_PARAMS_PATCH), \
+             patch(_MCP_SESSION_PATCH, return_value=session), \
+             patch(_MCP_STDIO_PATCH, return_value=stdio):
+            result = await ParallelSpecialistExecutor(llm).execute(
+                _context(wf_reg, ag_reg, tl_reg, "devops_remediation"),
+                "Summarize missing.txt",
+            )
+        assert isinstance(result, WorkflowResult)

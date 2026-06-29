@@ -159,14 +159,13 @@ class TestHTTPAdapter:
 
 
 class TestMCPAdapter:
-    def test_init_stores_server_url(self):
-        adapter = MCPAdapter(server_url="http://localhost:8001")
-        assert adapter._server_url == "http://localhost:8001"
-
     def test_init_does_not_raise(self):
-        MCPAdapter(server_url="http://localhost:8001")
+        from unittest.mock import MagicMock
+        manager = MagicMock()
+        MCPAdapter(server_command="npx", tool_name="read_file", _manager=manager)
 
-    async def test_execute_raises_not_implemented(self):
-        adapter = MCPAdapter(server_url="http://localhost:8001")
-        with pytest.raises(NotImplementedError):
-            await adapter.execute(make_call())
+    def test_init_stores_tool_name(self):
+        from unittest.mock import MagicMock
+        manager = MagicMock()
+        adapter = MCPAdapter(server_command="npx", tool_name="read_file", _manager=manager)
+        assert adapter._tool_name == "read_file"

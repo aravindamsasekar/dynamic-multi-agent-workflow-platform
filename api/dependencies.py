@@ -36,6 +36,7 @@ _orchestrator: Orchestrator | None = None
 _run_manager: RunManager | None = None
 _hitl_manager: ApprovalManager | None = None
 _workflow_registry: WorkflowRegistry | None = None
+_tool_registry: ToolRegistry | None = None
 _session_factory: sessionmaker[Session] | None = None
 _knowledge_service: KnowledgeService | None = None
 _knowledge_indexer: KnowledgeIndexer | None = None
@@ -47,7 +48,7 @@ def initialize(
 ) -> None:
     """Create and wire all platform singletons. Called once from lifespan."""
     global _orchestrator, _run_manager, _hitl_manager, _workflow_registry
-    global _session_factory, _knowledge_service, _knowledge_indexer
+    global _tool_registry, _session_factory, _knowledge_service, _knowledge_indexer
 
     # 1. Database — must come first so knowledge stack can use session_factory
     database_url = os.environ.get("DATABASE_URL", "sqlite:///./workflow.db")
@@ -98,6 +99,7 @@ def initialize(
     _run_manager = run_manager
     _hitl_manager = hitl_manager
     _workflow_registry = wf_registry
+    _tool_registry = tl_registry
 
 
 def _build_knowledge_stack(
@@ -149,6 +151,13 @@ async def _index_with_summary(indexer: KnowledgeIndexer) -> dict[str, int]:
     except Exception as exc:
         print(f"[WARNING] Knowledge indexing failed at startup: {exc}", file=sys.stderr)
         return {}
+
+
+async def shutdown() -> None:
+    """Close MCP connections and any other adapter resources. Called at app shutdown."""
+    if _tool_registry is not None:
+        for adapter in _tool_registry.get_all_adapters().values():
+            await adapter.close()
 
 
 def _create_llm_provider() -> ILLMProvider:

@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from api.dependencies import initialize, run_startup_indexing
+from api.dependencies import initialize, run_startup_indexing, shutdown
 from api.routers import hitl as hitl_router
 from api.routers import knowledge as knowledge_router
 from api.routers import runs as runs_router
@@ -21,6 +21,7 @@ async def lifespan(app: FastAPI):
     initialize(Path("workflows"))
     await run_startup_indexing()
     yield
+    await shutdown()
 
 
 app = FastAPI(

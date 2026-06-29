@@ -90,10 +90,24 @@ class ConfigValidator:
                 raise ConfigValidationError(
                     f"{prefix}Tool '{name}' (http) missing adapter_config.url"
                 )
-            if tool["adapter_type"] == AdapterType.MCP.value and "server_url" not in cfg:
-                raise ConfigValidationError(
-                    f"{prefix}Tool '{name}' (mcp) missing adapter_config.server_url"
-                )
+            if tool["adapter_type"] == AdapterType.MCP.value:
+                if "server_command" not in cfg:
+                    raise ConfigValidationError(
+                        f"{prefix}Tool '{name}' (mcp) missing adapter_config.server_command"
+                    )
+                if "tool_name" not in cfg:
+                    raise ConfigValidationError(
+                        f"{prefix}Tool '{name}' (mcp) missing adapter_config.tool_name"
+                    )
+                if "server_args" in cfg:
+                    args = cfg["server_args"]
+                    if not isinstance(args, list) or not all(
+                        isinstance(a, str) for a in args
+                    ):
+                        raise ConfigValidationError(
+                            f"{prefix}Tool '{name}' (mcp) adapter_config.server_args "
+                            "must be a list of strings"
+                        )
             if tool["adapter_type"] == AdapterType.GITHUB.value and "operation" not in cfg:
                 raise ConfigValidationError(
                     f"{prefix}Tool '{name}' (github) missing adapter_config.operation"

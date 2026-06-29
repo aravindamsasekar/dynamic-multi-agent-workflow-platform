@@ -75,7 +75,12 @@ tools:
       properties: {}
     adapter_type: mcp
     adapter_config:
-      server_url: http://localhost:8001
+      server_command: npx
+      server_args:
+        - -y
+        - "@modelcontextprotocol/server-filesystem"
+        - "."
+      tool_name: read_file
 """
 
 
@@ -158,6 +163,7 @@ class TestConfigLoader:
 
         adapter = tl_reg.get("mcp_tool")
         assert isinstance(adapter, MCPAdapter)
+        assert adapter._tool_name == "read_file"
 
     def test_load_all_tool_definition_also_registered(self, tmp_path: Path) -> None:
         _make_workflow_dir(tmp_path, "test-wf", tools_yaml=_MOCK_TOOL)
@@ -335,18 +341,64 @@ class TestConfigValidator:
                 }]
             })
 
-    def test_validate_tools_mcp_missing_server_url_raises(self) -> None:
+    def test_validate_tools_mcp_missing_server_command_raises(self) -> None:
         v = ConfigValidator()
-        with pytest.raises(ConfigValidationError, match="server_url"):
+        with pytest.raises(ConfigValidationError, match="server_command"):
             v.validate_tools({
                 "tools": [{
                     "name": "t1",
                     "description": "desc",
                     "input_schema": {"type": "object"},
                     "adapter_type": "mcp",
-                    "adapter_config": {},
+                    "adapter_config": {"tool_name": "read_file"},
                 }]
             })
+
+    def test_validate_tools_mcp_missing_tool_name_raises(self) -> None:
+        v = ConfigValidator()
+        with pytest.raises(ConfigValidationError, match="tool_name"):
+            v.validate_tools({
+                "tools": [{
+                    "name": "t1",
+                    "description": "desc",
+                    "input_schema": {"type": "object"},
+                    "adapter_type": "mcp",
+                    "adapter_config": {"server_command": "npx"},
+                }]
+            })
+
+    def test_validate_tools_mcp_server_args_not_list_raises(self) -> None:
+        v = ConfigValidator()
+        with pytest.raises(ConfigValidationError, match="server_args"):
+            v.validate_tools({
+                "tools": [{
+                    "name": "t1",
+                    "description": "desc",
+                    "input_schema": {"type": "object"},
+                    "adapter_type": "mcp",
+                    "adapter_config": {
+                        "server_command": "npx",
+                        "tool_name": "read_file",
+                        "server_args": "not-a-list",
+                    },
+                }]
+            })
+
+    def test_validate_tools_mcp_valid_passes(self) -> None:
+        v = ConfigValidator()
+        v.validate_tools({
+            "tools": [{
+                "name": "t1",
+                "description": "desc",
+                "input_schema": {"type": "object"},
+                "adapter_type": "mcp",
+                "adapter_config": {
+                    "server_command": "npx",
+                    "server_args": ["-y", "server"],
+                    "tool_name": "read_file",
+                },
+            }]
+        })
 
     def test_validate_tools_invalid_adapter_type_raises(self) -> None:
         v = ConfigValidator()
