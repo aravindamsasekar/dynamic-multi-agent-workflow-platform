@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
+import yaml
 from sqlalchemy.orm import Session, sessionmaker
 
 from platform.config.loader import ConfigLoader
 from platform.core.interfaces.llm import ILLMProvider
 from platform.hitl.approval_manager import ApprovalManager
+from platform.knowledge.config import KnowledgeConfig
+from platform.knowledge.embedder import OpenAIEmbedder
+from platform.knowledge.indexer import KnowledgeIndexer
+from platform.knowledge.retriever import KnowledgeRetriever
+from platform.knowledge.service import KnowledgeService
+from platform.knowledge.vector_store import FAISSVectorStore
 from platform.llm.openai_provider import OpenAIProvider
 from platform.memory.in_memory_store import InMemoryStore
 from platform.observability.composite_observer import CompositeObserver
@@ -29,22 +37,38 @@ _run_manager: RunManager | None = None
 _hitl_manager: ApprovalManager | None = None
 _workflow_registry: WorkflowRegistry | None = None
 _session_factory: sessionmaker[Session] | None = None
+_knowledge_service: KnowledgeService | None = None
+_knowledge_indexer: KnowledgeIndexer | None = None
 
 
-def initialize(workflows_dir: Path) -> None:
+def initialize(
+    workflows_dir: Path,
+    knowledge_config_path: Path | None = None,
+) -> None:
     """Create and wire all platform singletons. Called once from lifespan."""
-    global _orchestrator, _run_manager, _hitl_manager, _workflow_registry, _session_factory
+    global _orchestrator, _run_manager, _hitl_manager, _workflow_registry
+    global _session_factory, _knowledge_service, _knowledge_indexer
 
-    wf_registry = WorkflowRegistry()
-    ag_registry = AgentRegistry()
-    tl_registry = ToolRegistry()
-    ConfigLoader(wf_registry, ag_registry, tl_registry).load_all(workflows_dir)
-
+    # 1. Database — must come first so knowledge stack can use session_factory
     database_url = os.environ.get("DATABASE_URL", "sqlite:///./workflow.db")
     engine = build_engine(database_url)
     Base.metadata.create_all(engine)
     session_factory = build_session_factory(engine)
     _session_factory = session_factory
+
+    # 2. Knowledge stack — built before ConfigLoader so it can be wired to tools
+    cfg_path = knowledge_config_path if knowledge_config_path is not None else Path("knowledge_config.yaml")
+    service, indexer = _build_knowledge_stack(cfg_path, session_factory)
+    _knowledge_service = service
+    _knowledge_indexer = indexer
+
+    # 3. Workflow registries
+    wf_registry = WorkflowRegistry()
+    ag_registry = AgentRegistry()
+    tl_registry = ToolRegistry()
+    ConfigLoader(
+        wf_registry, ag_registry, tl_registry, knowledge_service=service
+    ).load_all(workflows_dir)
 
     memory_store = InMemoryStore()
     shared_state = SharedState()
@@ -74,6 +98,57 @@ def initialize(workflows_dir: Path) -> None:
     _run_manager = run_manager
     _hitl_manager = hitl_manager
     _workflow_registry = wf_registry
+
+
+def _build_knowledge_stack(
+    config_path: Path,
+    session_factory: sessionmaker[Session],
+) -> tuple[KnowledgeService | None, KnowledgeIndexer | None]:
+    """Build the full knowledge stack from config. Returns (None, None) if unavailable."""
+    if not config_path.exists():
+        print(
+            f"[WARNING] {config_path} not found; knowledge features disabled.",
+            file=sys.stderr,
+        )
+        return None, None
+    try:
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        config = KnowledgeConfig.from_dict(data)
+        embedder = OpenAIEmbedder(model=config.embedding_model)
+        vs = FAISSVectorStore(Path(config.vector_store_path))
+        retriever = KnowledgeRetriever(embedder, vs)
+        service = KnowledgeService(retriever)
+        indexer = KnowledgeIndexer(config, embedder, vs, session_factory)
+        return service, indexer
+    except Exception as exc:
+        print(
+            f"[WARNING] Knowledge initialization failed: {exc}",
+            file=sys.stderr,
+        )
+        return None, None
+
+
+async def run_startup_indexing() -> dict[str, int]:
+    """Run knowledge indexing at startup. No-op if knowledge is not configured."""
+    if _knowledge_indexer is None:
+        return {}
+    return await _index_with_summary(_knowledge_indexer)
+
+
+async def _index_with_summary(indexer: KnowledgeIndexer) -> dict[str, int]:
+    try:
+        results = await indexer.index_all()
+        total = sum(results.values())
+        changed = sum(1 for c in results.values() if c > 0)
+        print(
+            f"[Knowledge] {len(results)} collection(s): "
+            f"{changed} rebuilt, {total} chunk(s) total.",
+            file=sys.stderr,
+        )
+        return results
+    except Exception as exc:
+        print(f"[WARNING] Knowledge indexing failed at startup: {exc}", file=sys.stderr)
+        return {}
 
 
 def _create_llm_provider() -> ILLMProvider:
@@ -113,6 +188,11 @@ def get_session_factory() -> sessionmaker[Session]:
     if _session_factory is None:
         raise RuntimeError("Platform not initialized — call initialize() first")
     return _session_factory
+
+
+def get_knowledge_service() -> KnowledgeService | None:
+    """Return the KnowledgeService, or None if knowledge is not configured."""
+    return _knowledge_service
 
 
 def get_db_session():

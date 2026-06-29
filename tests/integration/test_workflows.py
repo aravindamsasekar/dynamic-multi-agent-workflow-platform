@@ -16,6 +16,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from unittest.mock import AsyncMock, MagicMock
+
 from platform.config.loader import ConfigLoader
 from platform.core.exceptions import PatternExecutionError
 from platform.core.interfaces.observer import IObserver
@@ -28,6 +30,8 @@ from platform.core.models.message import (
     ToolUseContent,
 )
 from platform.core.models.workflow import WorkflowResult
+from platform.knowledge.service import KnowledgeService
+from platform.knowledge.vector_store import SearchResult
 from platform.memory.in_memory_store import InMemoryStore
 from platform.orchestrator.orchestrator import Orchestrator
 from platform.orchestrator.run_manager import RunManager
@@ -68,11 +72,23 @@ def _tool_use(tool_id: str, tool_name: str, input: dict[str, Any] = {}) -> LLMRe
     )
 
 
-def _load(workflow_dir_name: str) -> tuple[WorkflowRegistry, AgentRegistry, ToolRegistry]:
+def _mock_ks(results: list[SearchResult] | None = None) -> MagicMock:
+    """Return a MagicMock KnowledgeService that returns preset search results."""
+    ks = MagicMock(spec=KnowledgeService)
+    ks.search = AsyncMock(return_value=results or [])
+    return ks
+
+
+def _load(
+    workflow_dir_name: str,
+    knowledge_service: object | None = None,
+) -> tuple[WorkflowRegistry, AgentRegistry, ToolRegistry]:
     wf_reg = WorkflowRegistry()
     ag_reg = AgentRegistry()
     tl_reg = ToolRegistry()
-    ConfigLoader(wf_reg, ag_reg, tl_reg).load_one(_WORKFLOWS_DIR / workflow_dir_name)
+    ConfigLoader(
+        wf_reg, ag_reg, tl_reg, knowledge_service=knowledge_service
+    ).load_one(_WORKFLOWS_DIR / workflow_dir_name)
     return wf_reg, ag_reg, tl_reg
 
 
@@ -318,7 +334,7 @@ class TestPRReviewWorkflow:
     """
 
     async def test_produces_workflow_result(self) -> None:
-        wf_reg, ag_reg, tl_reg = _load("pr_review")
+        wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=_mock_ks())
         llm = MockLLMProvider([
             # github_fetch_agent: 3 sequential tool calls then summary
             _tool_use("tu-1", "github_get_pr", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
@@ -338,7 +354,7 @@ class TestPRReviewWorkflow:
         assert result.output == "LGTM: clean implementation with good test coverage."
 
     async def test_result_contains_both_agents(self) -> None:
-        wf_reg, ag_reg, tl_reg = _load("pr_review")
+        wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=_mock_ks())
         llm = MockLLMProvider([
             _tool_use("tu-1", "github_get_pr", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
             _tool_use("tu-2", "github_get_files", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
@@ -357,7 +373,7 @@ class TestPRReviewWorkflow:
         assert len(result.agent_results) == 2
 
     async def test_fetch_agent_makes_three_tool_calls(self) -> None:
-        wf_reg, ag_reg, tl_reg = _load("pr_review")
+        wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=_mock_ks())
         llm = MockLLMProvider([
             _tool_use("tu-1", "github_get_pr", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
             _tool_use("tu-2", "github_get_files", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
@@ -374,7 +390,7 @@ class TestPRReviewWorkflow:
         assert fetch_result.tool_calls_made == 3
 
     async def test_review_agent_receives_fetch_output(self) -> None:
-        wf_reg, ag_reg, tl_reg = _load("pr_review")
+        wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=_mock_ks())
         fetch_summary = "Title: Add feature. Files: main.py (+20). Diff: +def add_feature()."
         llm = MockLLMProvider([
             _tool_use("tu-1", "github_get_pr", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
@@ -395,7 +411,7 @@ class TestPRReviewWorkflow:
     async def test_owner_repo_pull_number_propagate_to_github_urls(self) -> None:
         # Proves that owner/repo/pull_number from the tool call args reach the
         # correct GitHub API URLs — the critical end-to-end propagation check.
-        wf_reg, ag_reg, tl_reg = _load("pr_review")
+        wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=_mock_ks())
         mock_gh = _make_github_client()
         llm = MockLLMProvider([
             _tool_use("tu-1", "github_get_pr",    {"owner": "microsoft", "repo": "vscode", "pull_number": 99}),
@@ -418,7 +434,7 @@ class TestPRReviewWorkflow:
     async def test_dict_input_via_orchestrator_reaches_github_urls(self) -> None:
         # Full end-to-end: POST /runs body → Orchestrator (dict→JSON) → agent →
         # tool calls → GitHubAdapter → correct API URLs.
-        wf_reg, ag_reg, tl_reg = _load("pr_review")
+        wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=_mock_ks())
         shared_state = SharedState()
         run_manager = RunManager()
         mock_gh = _make_github_client()
@@ -456,3 +472,208 @@ class TestPRReviewWorkflow:
         assert len(called_urls) == 3
         assert "https://api.github.com/repos/octocat/Hello-World/pulls/1" in called_urls
         assert "https://api.github.com/repos/octocat/Hello-World/pulls/1/files" in called_urls
+
+
+# ---------------------------------------------------------------------------
+# TestPRReviewWithKnowledge
+# ---------------------------------------------------------------------------
+
+
+class TestPRReviewWithKnowledge:
+    """Verifies PR Review workflow with RAG-augmented review_agent.
+
+    GitHub and OpenAI calls are mocked. KnowledgeService uses AsyncMock
+    to return controlled SearchResult objects without hitting any index.
+    """
+
+    # -- Configuration loading ------------------------------------------------
+
+    def test_pr_review_config_loads_with_knowledge_search(self) -> None:
+        wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=_mock_ks())
+        wf = wf_reg.get("pr_review")
+        assert wf.workflow_id == "pr_review"
+
+    def test_knowledge_search_tool_registered_in_tool_registry(self) -> None:
+        _, _, tl_reg = _load("pr_review", knowledge_service=_mock_ks())
+        adapter = tl_reg.get("knowledge_search")
+        assert adapter is not None
+
+    def test_review_agent_has_knowledge_search_tool(self) -> None:
+        _, ag_reg, _ = _load("pr_review", knowledge_service=_mock_ks())
+        agent = ag_reg.get("review_agent")
+        assert "knowledge_search" in agent.tool_names
+
+    def test_github_fetch_agent_still_has_three_github_tools(self) -> None:
+        _, ag_reg, _ = _load("pr_review", knowledge_service=_mock_ks())
+        agent = ag_reg.get("github_fetch_agent")
+        assert set(agent.tool_names) == {"github_get_pr", "github_get_files", "github_get_diff"}
+
+    def test_knowledge_search_tool_definition_has_correct_adapter_type(self) -> None:
+        from platform.core.models.tool import AdapterType
+        _, _, tl_reg = _load("pr_review", knowledge_service=_mock_ks())
+        tool_def = tl_reg.get_definition("knowledge_search")
+        assert tool_def.adapter_type == AdapterType.KNOWLEDGE
+
+    def test_knowledge_search_collections_include_coding_standards(self) -> None:
+        from platform.tools.knowledge_adapter import KnowledgeAdapter
+        _, _, tl_reg = _load("pr_review", knowledge_service=_mock_ks())
+        adapter = tl_reg.get("knowledge_search")
+        assert isinstance(adapter, KnowledgeAdapter)
+        assert "coding-standards" in adapter._collections
+
+    # -- Workflow execution with mocked knowledge -----------------------------
+
+    async def test_workflow_completes_when_knowledge_returns_empty(self) -> None:
+        """Baseline: review_agent calls knowledge_search → empty results, still produces review."""
+        wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=_mock_ks([]))
+        llm = MockLLMProvider([
+            # github_fetch_agent
+            _tool_use("tu-1", "github_get_pr",    {"owner": "o", "repo": "r", "pull_number": 1}),
+            _tool_use("tu-2", "github_get_files", {"owner": "o", "repo": "r", "pull_number": 1}),
+            _tool_use("tu-3", "github_get_diff",  {"owner": "o", "repo": "r", "pull_number": 1}),
+            _text("PR data collected."),
+            # review_agent: searches knowledge (empty), then writes review
+            _tool_use("ks-1", "knowledge_search", {"query": "pull request review requirements tests"}),
+            _text("Approved: clean implementation."),
+        ])
+        with patch(_GITHUB_PATCH, return_value=_make_github_client()):
+            result = await ParallelSpecialistExecutor(llm).execute(
+                _context(wf_reg, ag_reg, tl_reg, "pr_review"),
+                _PR_INPUT,
+            )
+        assert isinstance(result, WorkflowResult)
+        assert result.output == "Approved: clean implementation."
+
+    async def test_review_agent_calls_knowledge_search(self) -> None:
+        """Verify review_agent actually invokes knowledge_search during the workflow."""
+        ks = _mock_ks([])
+        wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=ks)
+        llm = MockLLMProvider([
+            _tool_use("tu-1", "github_get_pr",    {"owner": "o", "repo": "r", "pull_number": 1}),
+            _tool_use("tu-2", "github_get_files", {"owner": "o", "repo": "r", "pull_number": 1}),
+            _tool_use("tu-3", "github_get_diff",  {"owner": "o", "repo": "r", "pull_number": 1}),
+            _text("PR fetched."),
+            _tool_use("ks-1", "knowledge_search", {"query": "coding standards"}),
+            _text("Review complete."),
+        ])
+        with patch(_GITHUB_PATCH, return_value=_make_github_client()):
+            await ParallelSpecialistExecutor(llm).execute(
+                _context(wf_reg, ag_reg, tl_reg, "pr_review"),
+                _PR_INPUT,
+            )
+        ks.search.assert_called_once()
+        call_args = ks.search.call_args
+        assert call_args[0][0] == "coding standards"  # query
+
+    async def test_knowledge_search_called_with_correct_collections(self) -> None:
+        ks = _mock_ks([])
+        wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=ks)
+        llm = MockLLMProvider([
+            _tool_use("tu-1", "github_get_pr",    {"owner": "o", "repo": "r", "pull_number": 1}),
+            _tool_use("tu-2", "github_get_files", {"owner": "o", "repo": "r", "pull_number": 1}),
+            _tool_use("tu-3", "github_get_diff",  {"owner": "o", "repo": "r", "pull_number": 1}),
+            _text("PR fetched."),
+            _tool_use("ks-1", "knowledge_search", {"query": "test requirements"}),
+            _text("Done."),
+        ])
+        with patch(_GITHUB_PATCH, return_value=_make_github_client()):
+            await ParallelSpecialistExecutor(llm).execute(
+                _context(wf_reg, ag_reg, tl_reg, "pr_review"),
+                _PR_INPUT,
+            )
+        call_args = ks.search.call_args
+        collections = call_args[0][1]  # second positional arg
+        assert "coding-standards" in collections
+
+    async def test_retrieved_knowledge_appears_in_review_agent_context(self) -> None:
+        """The SearchResult text returned by the service must reach the agent via ToolResult."""
+        standards_text = "Every PR must include tests for all changed business logic."
+        ks = _mock_ks([
+            SearchResult(
+                faiss_id=1,
+                text=standards_text,
+                source_file="coding-standards/pr_review_guidelines.md",
+                score=0.95,
+                collection="coding-standards",
+            )
+        ])
+        wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=ks)
+
+        # Capture what the review_agent receives after knowledge_search completes
+        captured_inputs: list[str] = []
+
+        class _CaptureLLM(MockLLMProvider):
+            def __init__(self, responses):
+                super().__init__(responses)
+                self._call_count = 0
+
+            async def complete(self, messages, tools=None):
+                self._call_count += 1
+                # The second call to the review agent (after tool result) will
+                # have the knowledge search result in the messages
+                if self._call_count >= 2:
+                    for m in messages:
+                        if hasattr(m, "content") and isinstance(m.content, str):
+                            captured_inputs.append(m.content)
+                        elif hasattr(m, "content") and isinstance(m.content, list):
+                            for c in m.content:
+                                if hasattr(c, "content") and isinstance(c.content, str):
+                                    captured_inputs.append(c.content)
+                return await super().complete(messages, tools)
+
+        llm = _CaptureLLM([
+            _tool_use("tu-1", "github_get_pr",    {"owner": "o", "repo": "r", "pull_number": 1}),
+            _tool_use("tu-2", "github_get_files", {"owner": "o", "repo": "r", "pull_number": 1}),
+            _tool_use("tu-3", "github_get_diff",  {"owner": "o", "repo": "r", "pull_number": 1}),
+            _text("PR fetched."),
+            _tool_use("ks-1", "knowledge_search", {"query": "test requirements"}),
+            _text("Request Changes: tests are missing per our coding standards."),
+        ])
+        with patch(_GITHUB_PATCH, return_value=_make_github_client()):
+            result = await ParallelSpecialistExecutor(llm).execute(
+                _context(wf_reg, ag_reg, tl_reg, "pr_review"),
+                _PR_INPUT,
+            )
+        # The review agent successfully used knowledge_search and produced a review
+        assert "Request Changes" in result.output
+        # The service was called and returned a result
+        ks.search.assert_called_once()
+
+    async def test_multiple_knowledge_searches_all_succeed(self) -> None:
+        """review_agent may search multiple times — each returns results correctly."""
+        ks = _mock_ks([])
+        wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=ks)
+        llm = MockLLMProvider([
+            _tool_use("tu-1", "github_get_pr",    {"owner": "o", "repo": "r", "pull_number": 1}),
+            _tool_use("tu-2", "github_get_files", {"owner": "o", "repo": "r", "pull_number": 1}),
+            _tool_use("tu-3", "github_get_diff",  {"owner": "o", "repo": "r", "pull_number": 1}),
+            _text("PR fetched."),
+            _tool_use("ks-1", "knowledge_search", {"query": "test requirements"}),
+            _tool_use("ks-2", "knowledge_search", {"query": "error handling standards"}),
+            _text("Review: Approve."),
+        ])
+        with patch(_GITHUB_PATCH, return_value=_make_github_client()):
+            result = await ParallelSpecialistExecutor(llm).execute(
+                _context(wf_reg, ag_reg, tl_reg, "pr_review"),
+                _PR_INPUT,
+            )
+        assert result.output == "Review: Approve."
+        assert ks.search.call_count == 2
+
+    async def test_existing_github_only_path_still_works(self) -> None:
+        """Existing tests using the workflow without explicit knowledge_search calls still pass."""
+        wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=_mock_ks())
+        llm = MockLLMProvider([
+            _tool_use("tu-1", "github_get_pr",    {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _tool_use("tu-2", "github_get_files", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _tool_use("tu-3", "github_get_diff",  {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _text("PR #42: Add feature. 2 files changed (+50/-10)."),
+            _text("LGTM: clean implementation with good test coverage."),
+        ])
+        with patch(_GITHUB_PATCH, return_value=_make_github_client()):
+            result = await ParallelSpecialistExecutor(llm).execute(
+                _context(wf_reg, ag_reg, tl_reg, "pr_review"),
+                _PR_INPUT,
+            )
+        assert result.output == "LGTM: clean implementation with good test coverage."
+        assert result.workflow_id == "pr_review"

@@ -8,8 +8,9 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from api.dependencies import initialize
+from api.dependencies import initialize, run_startup_indexing
 from api.routers import hitl as hitl_router
+from api.routers import knowledge as knowledge_router
 from api.routers import runs as runs_router
 from api.routers import workflows as workflows_router
 from platform.core.exceptions import RunNotFound, WorkflowNotFound
@@ -18,6 +19,7 @@ from platform.core.exceptions import RunNotFound, WorkflowNotFound
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     initialize(Path("workflows"))
+    await run_startup_indexing()
     yield
 
 
@@ -42,3 +44,4 @@ async def _run_not_found(request, exc: RunNotFound):
 app.include_router(workflows_router.router, prefix="/workflows", tags=["workflows"])
 app.include_router(runs_router.router, prefix="/runs", tags=["runs"])
 app.include_router(hitl_router.router, prefix="/runs", tags=["hitl"])
+app.include_router(knowledge_router.router, prefix="/knowledge", tags=["knowledge"])

@@ -55,3 +55,22 @@ tools:
     adapter_type: github
     adapter_config:
       operation: get_diff
+
+  - name: knowledge_search
+    description: >
+      Search the internal knowledge base for coding standards, architecture decisions,
+      and review guidelines relevant to the code being reviewed.
+      Use this before writing the final review to retrieve applicable standards.
+    input_schema:
+      type: object
+      properties:
+        query:
+          type: string
+          description: Natural-language description of what you are looking for
+      required: [query]
+    adapter_type: knowledge
+    adapter_config:
+      collections:
+        - coding-standards
+        - architecture
+      top_k: 5

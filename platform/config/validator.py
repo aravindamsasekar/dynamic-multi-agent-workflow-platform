@@ -98,3 +98,26 @@ class ConfigValidator:
                 raise ConfigValidationError(
                     f"{prefix}Tool '{name}' (github) missing adapter_config.operation"
                 )
+            if tool["adapter_type"] == AdapterType.KNOWLEDGE.value:
+                if "collections" not in cfg:
+                    raise ConfigValidationError(
+                        f"{prefix}Tool '{name}' (knowledge) missing adapter_config.collections"
+                    )
+                collections = cfg["collections"]
+                if not isinstance(collections, list) or not collections:
+                    raise ConfigValidationError(
+                        f"{prefix}Tool '{name}' (knowledge) adapter_config.collections "
+                        "must be a non-empty list"
+                    )
+                if not all(isinstance(c, str) and c.strip() for c in collections):
+                    raise ConfigValidationError(
+                        f"{prefix}Tool '{name}' (knowledge) adapter_config.collections "
+                        "must contain only non-empty strings"
+                    )
+                if "top_k" in cfg:
+                    top_k = cfg["top_k"]
+                    if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k < 1:
+                        raise ConfigValidationError(
+                            f"{prefix}Tool '{name}' (knowledge) adapter_config.top_k "
+                            "must be a positive integer"
+                        )

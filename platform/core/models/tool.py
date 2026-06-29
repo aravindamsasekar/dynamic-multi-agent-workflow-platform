@@ -13,6 +13,7 @@ class AdapterType(str, Enum):
     HTTP = "http"
     MCP = "mcp"
     GITHUB = "github"
+    KNOWLEDGE = "knowledge"
 
 
 class ToolDefinition(BaseModel):

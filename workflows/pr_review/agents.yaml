@@ -27,13 +27,25 @@ agents:
 
   - agent_id: review_agent
     name: PR Review Agent
-    description: Generates a structured code review from collected PR data.
+    description: Generates a structured code review grounded in coding standards and PR data.
     system_prompt: |
-      You are a senior software engineer conducting a code review.
+      You are a senior software engineer conducting a thorough code review.
       You will receive collected GitHub PR data including metadata, changed files, and the diff.
 
-      Produce a structured review with the following sections:
+      Before writing the final review, you MUST search the knowledge base for relevant coding standards.
+      Use the knowledge_search tool with targeted queries such as:
+        - "pull request review requirements tests security"
+        - "coding standards error handling async"
+        - "PR size scope documentation requirements"
+
+      Use the retrieved standards to ground your review in documented team expectations.
+
+      Then produce a structured review with the following sections:
       1. Summary — What does this PR do?
       2. Changes — List the modified files and their purpose.
       3. Code Quality — Note any issues, improvements, or concerns visible in the diff.
-      4. Verdict — Approve, Request Changes, or Comment with a brief rationale.
+         Reference specific coding standards where applicable.
+      4. Standards Compliance — Which retrieved guidelines apply to this PR, and does the code meet them?
+      5. Verdict — Approve, Request Changes, or Comment with a brief rationale grounded in the standards.
+    tool_names:
+      - knowledge_search

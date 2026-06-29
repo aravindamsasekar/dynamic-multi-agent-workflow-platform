@@ -6,13 +6,17 @@ from pathlib import Path
 
 import pytest
 
+from unittest.mock import MagicMock
+
 from platform.config.loader import ConfigLoader
 from platform.config.validator import ConfigValidator
 from platform.core.exceptions import ConfigValidationError
+from platform.knowledge.service import KnowledgeService
 from platform.registries.agent_registry import AgentRegistry
 from platform.registries.tool_registry import ToolRegistry
 from platform.registries.workflow_registry import WorkflowRegistry
 from platform.tools.http_adapter import HTTPAdapter
+from platform.tools.knowledge_adapter import KnowledgeAdapter
 from platform.tools.mcp_adapter import MCPAdapter
 from platform.tools.mock_adapter import MockAdapter
 
@@ -91,11 +95,19 @@ def _make_workflow_dir(
     return d
 
 
-def _make_loader(tmp_path: Path) -> tuple[ConfigLoader, WorkflowRegistry, AgentRegistry, ToolRegistry]:
+def _make_loader(
+    tmp_path: Path,
+    knowledge_service: object | None = None,
+) -> tuple[ConfigLoader, WorkflowRegistry, AgentRegistry, ToolRegistry]:
     wf_reg = WorkflowRegistry()
     ag_reg = AgentRegistry()
     tl_reg = ToolRegistry()
-    return ConfigLoader(wf_reg, ag_reg, tl_reg), wf_reg, ag_reg, tl_reg
+    return (
+        ConfigLoader(wf_reg, ag_reg, tl_reg, knowledge_service=knowledge_service),
+        wf_reg,
+        ag_reg,
+        tl_reg,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -355,3 +367,195 @@ class TestConfigValidator:
     def test_validate_tools_null_tools_value_passes(self) -> None:
         v = ConfigValidator()
         v.validate_tools({"tools": None})
+
+
+# ---------------------------------------------------------------------------
+# TestConfigValidatorKnowledge
+# ---------------------------------------------------------------------------
+
+_KNOWLEDGE_TOOL_BASE = {
+    "name": "ks",
+    "description": "Knowledge search",
+    "input_schema": {"type": "object"},
+    "adapter_type": "knowledge",
+}
+
+
+class TestConfigValidatorKnowledge:
+    def _wrap(self, adapter_config: dict) -> dict:
+        return {"tools": [{**_KNOWLEDGE_TOOL_BASE, "adapter_config": adapter_config}]}
+
+    def test_valid_knowledge_config_passes(self) -> None:
+        v = ConfigValidator()
+        v.validate_tools(self._wrap({"collections": ["col-a"]}))
+
+    def test_valid_with_top_k_passes(self) -> None:
+        v = ConfigValidator()
+        v.validate_tools(self._wrap({"collections": ["col-a"], "top_k": 5}))
+
+    def test_missing_collections_raises(self) -> None:
+        v = ConfigValidator()
+        with pytest.raises(ConfigValidationError, match="collections"):
+            v.validate_tools(self._wrap({}))
+
+    def test_empty_collections_list_raises(self) -> None:
+        v = ConfigValidator()
+        with pytest.raises(ConfigValidationError, match="non-empty"):
+            v.validate_tools(self._wrap({"collections": []}))
+
+    def test_collections_not_a_list_raises(self) -> None:
+        v = ConfigValidator()
+        with pytest.raises(ConfigValidationError, match="non-empty"):
+            v.validate_tools(self._wrap({"collections": "col-a"}))
+
+    def test_collections_with_empty_string_raises(self) -> None:
+        v = ConfigValidator()
+        with pytest.raises(ConfigValidationError, match="non-empty strings"):
+            v.validate_tools(self._wrap({"collections": ["col-a", ""]}))
+
+    def test_collections_with_non_string_raises(self) -> None:
+        v = ConfigValidator()
+        with pytest.raises(ConfigValidationError, match="non-empty strings"):
+            v.validate_tools(self._wrap({"collections": [123]}))
+
+    def test_multiple_collections_passes(self) -> None:
+        v = ConfigValidator()
+        v.validate_tools(self._wrap({"collections": ["col-a", "col-b", "col-c"]}))
+
+    def test_top_k_zero_raises(self) -> None:
+        v = ConfigValidator()
+        with pytest.raises(ConfigValidationError, match="positive integer"):
+            v.validate_tools(self._wrap({"collections": ["col-a"], "top_k": 0}))
+
+    def test_top_k_negative_raises(self) -> None:
+        v = ConfigValidator()
+        with pytest.raises(ConfigValidationError, match="positive integer"):
+            v.validate_tools(self._wrap({"collections": ["col-a"], "top_k": -1}))
+
+    def test_top_k_string_raises(self) -> None:
+        v = ConfigValidator()
+        with pytest.raises(ConfigValidationError, match="positive integer"):
+            v.validate_tools(self._wrap({"collections": ["col-a"], "top_k": "five"}))
+
+    def test_top_k_bool_raises(self) -> None:
+        v = ConfigValidator()
+        with pytest.raises(ConfigValidationError, match="positive integer"):
+            v.validate_tools(self._wrap({"collections": ["col-a"], "top_k": True}))
+
+    def test_top_k_omitted_passes(self) -> None:
+        v = ConfigValidator()
+        v.validate_tools(self._wrap({"collections": ["col-a"]}))
+
+
+# ---------------------------------------------------------------------------
+# TestConfigLoaderKnowledge
+# ---------------------------------------------------------------------------
+
+_KNOWLEDGE_TOOL_YAML = """\
+tools:
+  - name: knowledge_search
+    description: Search knowledge base
+    input_schema:
+      type: object
+      properties:
+        query:
+          type: string
+    adapter_type: knowledge
+    adapter_config:
+      collections:
+        - coding-standards
+        - architecture
+      top_k: 3
+"""
+
+_KNOWLEDGE_TOOL_NO_TOP_K_YAML = """\
+tools:
+  - name: knowledge_search
+    description: Search knowledge base
+    input_schema:
+      type: object
+      properties:
+        query:
+          type: string
+    adapter_type: knowledge
+    adapter_config:
+      collections:
+        - docs
+"""
+
+
+class TestConfigLoaderKnowledge:
+    def _mock_service(self) -> MagicMock:
+        return MagicMock(spec=KnowledgeService)
+
+    def test_knowledge_tool_builds_knowledge_adapter(self, tmp_path: Path) -> None:
+        _make_workflow_dir(tmp_path, "wf", tools_yaml=_KNOWLEDGE_TOOL_YAML)
+        service = self._mock_service()
+        loader, _, _, tl_reg = _make_loader(tmp_path, knowledge_service=service)
+        loader.load_all(tmp_path)
+
+        adapter = tl_reg.get("knowledge_search")
+        assert isinstance(adapter, KnowledgeAdapter)
+
+    def test_knowledge_adapter_has_correct_collections(self, tmp_path: Path) -> None:
+        _make_workflow_dir(tmp_path, "wf", tools_yaml=_KNOWLEDGE_TOOL_YAML)
+        service = self._mock_service()
+        loader, _, _, tl_reg = _make_loader(tmp_path, knowledge_service=service)
+        loader.load_all(tmp_path)
+
+        adapter = tl_reg.get("knowledge_search")
+        assert isinstance(adapter, KnowledgeAdapter)
+        assert adapter._collections == ["coding-standards", "architecture"]
+
+    def test_knowledge_adapter_has_correct_top_k(self, tmp_path: Path) -> None:
+        _make_workflow_dir(tmp_path, "wf", tools_yaml=_KNOWLEDGE_TOOL_YAML)
+        service = self._mock_service()
+        loader, _, _, tl_reg = _make_loader(tmp_path, knowledge_service=service)
+        loader.load_all(tmp_path)
+
+        adapter = tl_reg.get("knowledge_search")
+        assert isinstance(adapter, KnowledgeAdapter)
+        assert adapter._top_k == 3
+
+    def test_knowledge_adapter_default_top_k_when_omitted(self, tmp_path: Path) -> None:
+        _make_workflow_dir(tmp_path, "wf", tools_yaml=_KNOWLEDGE_TOOL_NO_TOP_K_YAML)
+        service = self._mock_service()
+        loader, _, _, tl_reg = _make_loader(tmp_path, knowledge_service=service)
+        loader.load_all(tmp_path)
+
+        adapter = tl_reg.get("knowledge_search")
+        assert isinstance(adapter, KnowledgeAdapter)
+        assert adapter._top_k == 5
+
+    def test_knowledge_adapter_receives_service(self, tmp_path: Path) -> None:
+        _make_workflow_dir(tmp_path, "wf", tools_yaml=_KNOWLEDGE_TOOL_YAML)
+        service = self._mock_service()
+        loader, _, _, tl_reg = _make_loader(tmp_path, knowledge_service=service)
+        loader.load_all(tmp_path)
+
+        adapter = tl_reg.get("knowledge_search")
+        assert isinstance(adapter, KnowledgeAdapter)
+        assert adapter._service is service
+
+    def test_missing_service_raises_clear_error(self, tmp_path: Path) -> None:
+        """load_one() propagates the ConfigValidationError directly."""
+        _make_workflow_dir(tmp_path, "wf", tools_yaml=_KNOWLEDGE_TOOL_YAML)
+        loader, _, _, _ = _make_loader(tmp_path, knowledge_service=None)
+        wf_dir = tmp_path / "wf"
+        with pytest.raises(ConfigValidationError, match="KnowledgeService"):
+            loader.load_one(wf_dir)
+
+    def test_missing_service_load_all_logs_warning(self, tmp_path: Path) -> None:
+        """load_all() swallows the error as a warning (existing behaviour for all tool errors)."""
+        _make_workflow_dir(tmp_path, "wf", tools_yaml=_KNOWLEDGE_TOOL_YAML)
+        loader, _, _, _ = _make_loader(tmp_path, knowledge_service=None)
+        loader.load_all(tmp_path)  # must not raise
+
+    def test_knowledge_tool_without_service_logged_as_warning(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        _make_workflow_dir(tmp_path, "wf", tools_yaml=_KNOWLEDGE_TOOL_YAML)
+        loader, _, _, _ = _make_loader(tmp_path, knowledge_service=None)
+        loader.load_all(tmp_path)
+        captured = capsys.readouterr()
+        assert "wf" in captured.err

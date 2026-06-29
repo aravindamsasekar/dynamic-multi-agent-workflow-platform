@@ -251,6 +251,119 @@ curl -X POST http://localhost:8000/runs/{run_id}/reject \
 
 No platform code changes required.
 
+## Knowledge Layer (RAG)
+
+The platform includes a retrieval-augmented generation (RAG) layer that lets agents search internal knowledge bases before responding. The PR Review workflow uses this to ground reviews in team coding standards.
+
+### How it works
+
+1. **Source documents** live in `resources/knowledge/<collection>/` (plain text, Markdown, code).
+2. At startup, `KnowledgeIndexer` scans each collection, computes SHA-256 hashes per file, and rebuilds the FAISS index only for collections where files have changed. Unchanged collections are skipped.
+3. At runtime, `knowledge_search` is a normal tool. When an agent calls it, `KnowledgeAdapter` embeds the query with OpenAI, searches FAISS (cosine similarity), and returns the top-k matching chunks.
+4. Generated artifacts (`data/knowledge/`) are gitignored.
+
+### Configuration
+
+Create `knowledge_config.yaml` in the project root:
+
+```yaml
+knowledge:
+  embedding:
+    model: text-embedding-3-small
+  vector_store:
+    path: data/knowledge
+  chunking:
+    size: 1000
+    overlap: 200
+  retrieval:
+    top_k: 5
+  collections:
+    - name: coding-standards
+      path: resources/knowledge/coding-standards
+    - name: architecture
+      path: resources/knowledge/architecture
+    - name: runbooks
+      path: resources/knowledge/runbooks
+```
+
+If `knowledge_config.yaml` is missing, the server starts normally and logs a warning. Knowledge tools in any workflow will return HTTP 503 until the file is created and the server is restarted.
+
+### Adding knowledge documents
+
+Place `.md`, `.txt`, `.py`, or any supported text file under the relevant collection directory:
+
+```
+resources/knowledge/
+  coding-standards/
+    coding_standards.md
+    testing_guidelines.md
+    pr_review_guidelines.md
+  architecture/
+    platform_architecture.md
+  runbooks/
+    pr_review_runbook.md
+```
+
+Then trigger re-indexing (see below).
+
+### Building or rebuilding indexes
+
+**Option A — Automatic at startup** (default): Every server start runs the indexer. Only changed collections are rebuilt.
+
+**Option B — CLI script**:
+
+```bash
+python -m scripts.index_knowledge
+```
+
+Output:
+```
+  coding-standards: 42 chunk(s) indexed
+  architecture: up to date (skipped)
+  runbooks: 8 chunk(s) indexed
+
+Done. 2/3 collection(s) rebuilt, 50 chunk(s) total.
+```
+
+### Testing the search API
+
+```bash
+curl -s -X POST http://localhost:8000/knowledge/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "missing tests in pull request",
+    "collections": ["coding-standards"],
+    "top_k": 3
+  }' | python -m json.tool
+```
+
+List indexed collections:
+```bash
+curl http://localhost:8000/knowledge/collections
+curl http://localhost:8000/knowledge/collections/coding-standards
+```
+
+### Running PR Review with RAG
+
+The `pr_review` workflow is pre-configured to use `knowledge_search`. The `review_agent` will call it automatically before writing the final review.
+
+**Requirements:**
+- `OPENAI_API_KEY` set (for both LLM calls and embeddings)
+- `GITHUB_TOKEN` set (for private repositories)
+- `knowledge_config.yaml` present
+- Knowledge base indexed (automatic at startup)
+
+```bash
+curl -s -X POST http://localhost:8000/runs/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow_id": "pr_review",
+    "input": {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}
+  }' | python -m json.tool
+```
+
+The review will include a "Standards Compliance" section citing specific retrieved guidelines.
+
 ## V2 Roadmap
 
 - **Dynamic Workflow Builder** — compose workflows from natural language descriptions

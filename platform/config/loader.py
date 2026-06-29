@@ -10,6 +10,7 @@ import sys
 import yaml
 
 from platform.config.validator import ConfigValidator
+from platform.core.exceptions import ConfigValidationError
 from platform.core.interfaces.tool import IToolAdapter
 from platform.core.models.agent import AgentDefinition
 from platform.core.models.tool import AdapterType, ToolDefinition
@@ -61,6 +62,8 @@ class ConfigLoader:
         workflow.yaml  → WorkflowRegistry
         agents.yaml    → AgentRegistry
         tools.yaml     → ToolRegistry (instantiates the correct IToolAdapter per entry)
+
+    Pass knowledge_service to enable adapter_type: knowledge tools.
     """
 
     def __init__(
@@ -68,11 +71,17 @@ class ConfigLoader:
         workflow_registry: object,
         agent_registry: object,
         tool_registry: object,
+        knowledge_service: object | None = None,
     ) -> None:
         self._workflow_registry = workflow_registry
         self._agent_registry = agent_registry
         self._tool_registry = tool_registry
+        self._knowledge_service = knowledge_service
         self._validator = ConfigValidator()
+        self._builders: dict[AdapterType, _AdapterBuilder] = {
+            **_ADAPTER_BUILDERS,
+            AdapterType.KNOWLEDGE: self._build_knowledge_adapter,
+        }
 
     def load_all(self, workflows_dir: Path) -> None:
         """Scan workflows_dir and load all workflow definitions into registries."""
@@ -113,5 +122,18 @@ class ConfigLoader:
         self._validator.validate_tools(raw, source=str(tools_path))
         for tool_data in (raw["tools"] or []):
             tool_def = ToolDefinition(**tool_data)
-            adapter = _ADAPTER_BUILDERS[tool_def.adapter_type](tool_def.adapter_config)
+            adapter = self._builders[tool_def.adapter_type](tool_def.adapter_config)
             self._tool_registry.register(tool_def.name, adapter, tool_def)  # type: ignore[attr-defined]
+
+    def _build_knowledge_adapter(self, cfg: dict[str, Any]) -> IToolAdapter:
+        if self._knowledge_service is None:
+            raise ConfigValidationError(
+                "Tool uses adapter_type 'knowledge' but KnowledgeService is not configured. "
+                "Pass knowledge_service to ConfigLoader before loading knowledge tools."
+            )
+        from platform.tools.knowledge_adapter import KnowledgeAdapter
+        return KnowledgeAdapter(
+            service=self._knowledge_service,  # type: ignore[arg-type]
+            collections=cfg["collections"],
+            top_k=int(cfg.get("top_k", 5)),
+        )

@@ -53,3 +53,13 @@ class EventRow(Base):
     event_type: Mapped[str] = mapped_column(String, nullable=False)
     payload: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class KnowledgeChunkRow(Base):
+    __tablename__ = "knowledge_chunks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    collection: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    source_file: Mapped[str] = mapped_column(String, nullable=False)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_hash: Mapped[str] = mapped_column(String, nullable=False)

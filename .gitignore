@@ -4,3 +4,11 @@ __pycache__/
 .venv/
 *.egg-info/
 dist/
+
+# Generated knowledge artifacts
+data/
+*.index
+*.chunks.json
+
+# Database
+workflow.db

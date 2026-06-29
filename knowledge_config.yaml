@@ -1,0 +1,23 @@
+knowledge:
+  embedding:
+    model: text-embedding-3-small
+
+  vector_store:
+    path: data/knowledge
+
+  chunking:
+    size: 1000
+    overlap: 200
+
+  retrieval:
+    top_k: 5
+
+  collections:
+    - name: coding-standards
+      path: resources/knowledge/coding-standards
+
+    - name: architecture
+      path: resources/knowledge/architecture
+
+    - name: runbooks
+      path: resources/knowledge/runbooks
