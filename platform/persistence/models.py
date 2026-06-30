@@ -55,6 +55,19 @@ class EventRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
+class GeneratedPlanRow(Base):
+    __tablename__ = "generated_plans"
+
+    plan_id: Mapped[str] = mapped_column(String, primary_key=True)
+    goal: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)   # pending_review|executed|rejected|failed
+    plan_json: Mapped[str] = mapped_column(Text, nullable=False)
+    validation_json: Mapped[str] = mapped_column(Text, nullable=False)
+    execution_run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
 class KnowledgeChunkRow(Base):
     __tablename__ = "knowledge_chunks"
 

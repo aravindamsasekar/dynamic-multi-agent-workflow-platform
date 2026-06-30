@@ -26,6 +26,9 @@ from platform.observability.persisting_observer import PersistingObserver
 from platform.orchestrator.orchestrator import Orchestrator
 from platform.orchestrator.run_manager import RunManager
 from platform.persistence.database import Base, build_engine, build_session_factory
+from platform.planner.capability_registry import CapabilityRegistry
+from platform.planner.execution_adapter import ExecutionAdapter
+from platform.planner.planner_service import PlannerService
 from platform.policy.engine import PolicyEngine
 from platform.registries.agent_registry import AgentRegistry
 from platform.registries.tool_registry import ToolRegistry
@@ -40,6 +43,9 @@ _tool_registry: ToolRegistry | None = None
 _session_factory: sessionmaker[Session] | None = None
 _knowledge_service: KnowledgeService | None = None
 _knowledge_indexer: KnowledgeIndexer | None = None
+_capability_registry: CapabilityRegistry | None = None
+_planner_service: PlannerService | None = None
+_execution_adapter: ExecutionAdapter | None = None
 
 
 def initialize(
@@ -49,6 +55,7 @@ def initialize(
     """Create and wire all platform singletons. Called once from lifespan."""
     global _orchestrator, _run_manager, _hitl_manager, _workflow_registry
     global _tool_registry, _session_factory, _knowledge_service, _knowledge_indexer
+    global _capability_registry, _planner_service, _execution_adapter
 
     # 1. Database — must come first so knowledge stack can use session_factory
     database_url = os.environ.get("DATABASE_URL", "sqlite:///./workflow.db")
@@ -100,6 +107,16 @@ def initialize(
     _hitl_manager = hitl_manager
     _workflow_registry = wf_registry
     _tool_registry = tl_registry
+
+    # V3 planner stack
+    cap_registry = CapabilityRegistry.build_pr_review_registry()
+    _capability_registry = cap_registry
+    _planner_service = PlannerService(llm=llm_provider, registry=cap_registry)
+    _execution_adapter = ExecutionAdapter(
+        orchestrator=orchestrator,
+        workflow_registry=wf_registry,
+        capability_registry=cap_registry,
+    )
 
 
 def _build_knowledge_stack(
@@ -210,3 +227,21 @@ def get_db_session():
         raise RuntimeError("Platform not initialized — call initialize() first")
     with _session_factory() as session:
         yield session
+
+
+def get_capability_registry() -> CapabilityRegistry:
+    if _capability_registry is None:
+        raise RuntimeError("Platform not initialized — call initialize() first")
+    return _capability_registry
+
+
+def get_planner_service() -> PlannerService:
+    if _planner_service is None:
+        raise RuntimeError("Platform not initialized — call initialize() first")
+    return _planner_service
+
+
+def get_execution_adapter() -> ExecutionAdapter:
+    if _execution_adapter is None:
+        raise RuntimeError("Platform not initialized — call initialize() first")
+    return _execution_adapter

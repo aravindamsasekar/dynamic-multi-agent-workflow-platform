@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from api.dependencies import initialize, run_startup_indexing, shutdown
 from api.routers import hitl as hitl_router
 from api.routers import knowledge as knowledge_router
+from api.routers import planner as planner_router
 from api.routers import runs as runs_router
 from api.routers import workflows as workflows_router
 from platform.core.exceptions import RunNotFound, WorkflowNotFound
@@ -46,3 +47,4 @@ app.include_router(workflows_router.router, prefix="/workflows", tags=["workflow
 app.include_router(runs_router.router, prefix="/runs", tags=["runs"])
 app.include_router(hitl_router.router, prefix="/runs", tags=["hitl"])
 app.include_router(knowledge_router.router, prefix="/knowledge", tags=["knowledge"])
+app.include_router(planner_router.router, prefix="/planner", tags=["planner"])

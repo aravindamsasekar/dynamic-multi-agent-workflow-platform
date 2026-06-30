@@ -4,7 +4,7 @@ A Python platform for building, running, and observing multi-agent AI workflows.
 Define workflows as YAML, execute them through a REST API, and wire in real tools —
 GitHub, FAISS-backed knowledge search, and MCP servers — without touching platform code.
 
-**684 tests passing · Python 3.12+ · FastAPI · SQLite · FAISS · OpenAI**
+**919 tests passing · Python 3.12+ · FastAPI · SQLite · FAISS · OpenAI**
 
 ---
 
@@ -51,8 +51,8 @@ graph TD
 ```
 api/
   main.py                    # FastAPI app + lifespan (startup indexing, shutdown)
-  dependencies.py            # DI: orchestrator, DB session, knowledge service
-  routers/                   # runs · workflows · knowledge · hitl
+  dependencies.py            # DI: orchestrator, DB session, knowledge service, planner
+  routers/                   # runs · workflows · knowledge · hitl · planner
   schemas/                   # Pydantic request/response models
 
 platform/
@@ -70,7 +70,8 @@ platform/
   observability/             # ConsoleObserver · PersistingObserver
   orchestrator/              # Orchestrator · RunManager
   patterns/                  # ParallelSpecialistExecutor · RouterExecutor · PEOExecutor
-  persistence/               # SQLAlchemy models + repositories (runs, agents, tools, events)
+  persistence/               # SQLAlchemy models + repositories (runs, agents, tools, events, plans)
+  planner/                   # V3.1 dynamic planner — goal analysis, plan builder, execution adapter
   policy/                    # PolicyEngine + ContentFilterRule
   registries/                # WorkflowRegistry · AgentRegistry · ToolRegistry
   state/                     # SharedState — per-run cross-agent key-value store
@@ -174,7 +175,7 @@ DATABASE_URL=sqlite:///./workflow.db
 python -m pytest tests/ -q
 ```
 
-All 684 tests use `MockLLMProvider` — no API keys required.
+All 919 tests use `MockLLMProvider` — no API keys required.
 
 ### 5. Start the API
 
@@ -194,6 +195,8 @@ At startup the server:
 
 ## API reference
 
+### Workflow execution
+
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/runs/` | Trigger a workflow run |
@@ -204,6 +207,20 @@ At startup the server:
 | `POST` | `/runs/{run_id}/approve` | Approve a paused HITL run |
 | `POST` | `/runs/{run_id}/reject` | Reject a paused HITL run |
 | `GET` | `/workflows/` | List all loaded workflow definitions |
+
+### Dynamic workflow planner (V3.1)
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/planner/generate` | Analyze a natural-language goal and return a generated plan |
+| `GET` | `/planner/{plan_id}` | Retrieve a previously generated plan by ID |
+| `POST` | `/planner/{plan_id}/approve` | Approve a plan and execute it through the V2 runtime |
+| `POST` | `/planner/{plan_id}/reject` | Reject a plan so it will not be executed |
+
+### Knowledge
+
+| Method | Path | Description |
+|---|---|---|
 | `POST` | `/knowledge/search` | Search knowledge collections |
 | `GET` | `/knowledge/collections` | List indexed collections with stats |
 | `GET` | `/knowledge/collections/{name}` | Collection detail (documents, chunk count) |
@@ -623,18 +640,282 @@ V2 adds real-world integrations and production readiness on top of the V1 execut
 - Clean shutdown wiring via `IToolAdapter.close()`
 - `devops_remediation` workflow demonstrating MCP filesystem server integration
 
-**Total: 684 tests passing**
+**V2 total: 684 tests passing**
+
+---
+
+## V3.1 — Dynamic Workflow Generation (complete)
+
+V3.1 adds a natural-language planning layer above the V2 execution engine. Instead of authoring a YAML workflow definition, you describe your goal in plain English. The planner analyzes it, selects agents and tools from the registry, validates the plan, and lets you preview and approve it before anything executes.
+
+**The V2 runtime is not modified.** The planner generates a `WorkflowDefinition` and hands it to the same `Orchestrator` that runs all existing YAML workflows.
+
+### How it works
+
+```
+POST /planner/generate  {"goal": "Review PR #42 in org/repo"}
+  ↓
+GoalAnalyzer (1 LLM call)
+  → Classifies task type (code_review)
+  → Identifies required capabilities
+  → Assesses risk level + HITL requirement
+  ↓
+PlanBuilder (deterministic Python)
+  → Selects agents from CapabilityRegistry
+  → Selects tools from CapabilityRegistry
+  → Selects execution pattern
+  → Generates guardrails
+  → Estimates complexity + duration
+  ↓
+PlanValidator (deterministic Python)
+  → 13 validation checks
+  → Produces ValidationResult (errors + warnings)
+  ↓
+Plan persisted to SQLite (status: pending_review)
+  ↓
+Response: GeneratedWorkflowPlan + ValidationResult
+
+GET /planner/{plan_id}          ← review the plan
+POST /planner/{plan_id}/approve ← execute via V2 orchestrator
+POST /planner/{plan_id}/reject  ← discard without executing
+```
+
+### Planner API
+
+#### POST /planner/generate
+
+Analyzes a natural-language goal and returns a generated plan with validation.
+
+**Request:**
+```json
+{ "goal": "Review pull request #42 in the org/myrepo repository" }
+```
+
+**Response (201):**
+```json
+{
+  "plan_id": "a3f7b2c1-...",
+  "goal": "Review pull request #42 in the org/myrepo repository",
+  "status": "pending_review",
+  "goal_analysis": {
+    "task_type": "code_review",
+    "required_capabilities": ["fetch_pr_data", "review_code_quality", "assess_security", "synthesize_findings"],
+    "risk_level": "low",
+    "confidence": 0.92,
+    "reasoning": "Goal clearly describes a GitHub pull request code review.",
+    "constraints": ["read_only"],
+    "requires_hitl": false
+  },
+  "selected_pattern": "parallel_specialist",
+  "selected_agents": ["pr_data_agent", "review_specialist", "risk_specialist", "synthesis_agent"],
+  "selected_tools": ["github_get_pr", "github_get_files", "github_get_diff", "knowledge_search", "mcp_get_pr_comments"],
+  "guardrails": [
+    { "rule_type": "content_filter", "config": {}, "reason": "All outputs reviewed for policy compliance" }
+  ],
+  "hitl_required": false,
+  "warnings": [],
+  "explanation": "Selected parallel_specialist pattern with 4 agents...",
+  "estimated_complexity": "medium",
+  "estimated_duration_seconds": 75,
+  "validation": {
+    "is_valid": true,
+    "errors": [],
+    "warnings": []
+  }
+}
+```
+
+**Error (422):** returned when the LLM cannot parse a valid `GoalAnalysis` (e.g., prompt injection, network error, malformed response).
+
+#### GET /planner/{plan_id}
+
+Returns the full plan including current status.
+
+**Response (200):** Same shape as `POST /planner/generate`. `status` will be one of: `pending_review`, `executed`, `rejected`, `failed`.
+
+**Response (404):** Plan not found.
+
+#### POST /planner/{plan_id}/approve
+
+Approves the plan and immediately executes it through the V2 orchestrator. Returns the run result.
+
+**Request:**
+```json
+{ "input_data": { "owner": "org", "repo": "myrepo", "pull_number": 42 } }
+```
+
+`input_data` can be a string or a dict. It is passed directly to `Orchestrator.run()` as the workflow input.
+
+**Response (200):**
+```json
+{
+  "plan_id": "a3f7b2c1-...",
+  "run_id": "8b2e4f1a-...",
+  "status": "completed",
+  "output": "## Pull Request Review\n..."
+}
+```
+
+**Response (404):** Plan not found.
+
+**Response (409):** Plan is not in `pending_review` status (already executed or rejected).
+
+#### POST /planner/{plan_id}/reject
+
+Rejects the plan. No execution occurs. The plan is marked `rejected` in the database.
+
+**Request:**
+```json
+{ "reason": "Too many agents selected for this simple PR" }
+```
+
+`reason` is optional (defaults to empty string). It is not persisted — the rejection itself is the signal.
+
+**Response (200):**
+```json
+{
+  "plan_id": "a3f7b2c1-...",
+  "goal": "Review pull request #42...",
+  "status": "rejected",
+  "execution_run_id": null,
+  "created_at": "2026-06-30T10:00:00",
+  "updated_at": "2026-06-30T10:05:00"
+}
+```
+
+**Response (404):** Plan not found.
+
+**Response (409):** Plan is not in `pending_review` status.
+
+---
+
+### Demo: Dynamic PR review plan
+
+> All examples use PowerShell. `curl` equivalents follow each block.
+
+**Step 1 — Generate the plan**
+
+```powershell
+$body = @{ goal = "Review pull request #42 in the org/myrepo repository" } | ConvertTo-Json
+$plan = Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:8000/planner/generate" `
+    -ContentType "application/json" `
+    -Body $body
+$plan | ConvertTo-Json -Depth 5
+$planId = $plan.plan_id
+```
+
+```bash
+PLAN=$(curl -s -X POST http://localhost:8000/planner/generate \
+  -H "Content-Type: application/json" \
+  -d '{"goal":"Review pull request #42 in the org/myrepo repository"}')
+echo $PLAN | python -m json.tool
+PLAN_ID=$(echo $PLAN | python -c "import sys,json; print(json.load(sys.stdin)['plan_id'])")
+```
+
+**Step 2 — Preview the plan**
+
+```powershell
+Invoke-RestMethod "http://localhost:8000/planner/$planId" | ConvertTo-Json -Depth 5
+```
+
+```bash
+curl -s "http://localhost:8000/planner/$PLAN_ID" | python -m json.tool
+```
+
+**Step 3 — Approve and execute**
+
+```powershell
+$approveBody = @{
+    input_data = @{ owner = "org"; repo = "myrepo"; pull_number = 42 }
+} | ConvertTo-Json -Depth 3
+
+$result = Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:8000/planner/$planId/approve" `
+    -ContentType "application/json" `
+    -Body $approveBody
+$result | ConvertTo-Json -Depth 3
+```
+
+```bash
+curl -s -X POST "http://localhost:8000/planner/$PLAN_ID/approve" \
+  -H "Content-Type: application/json" \
+  -d '{"input_data":{"owner":"org","repo":"myrepo","pull_number":42}}' \
+  | python -m json.tool
+```
+
+**Step 4 — Inspect the run**
+
+```powershell
+$runId = $result.run_id
+Invoke-RestMethod "http://localhost:8000/runs/$runId/details" | ConvertTo-Json -Depth 5
+```
+
+```bash
+RUN_ID=$(echo $result | python -c "import sys,json; print(json.load(sys.stdin)['run_id'])")
+curl -s "http://localhost:8000/runs/$RUN_ID/details" | python -m json.tool
+```
+
+**Step 5 — Reject a plan instead**
+
+```powershell
+Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:8000/planner/$planId/reject" `
+    -ContentType "application/json" `
+    -Body '{"reason":"Too broad — narrowing scope first"}'
+```
+
+```bash
+curl -s -X POST "http://localhost:8000/planner/$PLAN_ID/reject" \
+  -H "Content-Type: application/json" \
+  -d '{"reason":"Too broad — narrowing scope first"}' \
+  | python -m json.tool
+```
+
+---
+
+### Live verification checklist
+
+Run these checks after `uvicorn api.main:app --reload` to verify the end-to-end V3.1 flow:
+
+1. **Generate a plan** — `POST /planner/generate` with a PR review goal returns HTTP 201 and a non-empty `plan_id`.
+2. **Check validation** — response `validation.is_valid` is `true` and `selected_agents` contains at least `pr_data_agent` and `synthesis_agent`.
+3. **Preview the plan** — `GET /planner/{plan_id}` returns HTTP 200 with `status: pending_review`.
+4. **Approve and execute** — `POST /planner/{plan_id}/approve` with `input_data` returns HTTP 200 with a `run_id`.
+5. **Verify execution** — `GET /runs/{run_id}/details` shows `status: completed` (or `waiting_approval` if HITL was triggered) and populated `agent_results`.
+6. **Check persistence** — `GET /planner/{plan_id}` now returns `status: executed` with a non-null `execution_run_id`.
+7. **Reject a fresh plan** — generate a second plan, then `POST /planner/{plan_id}/reject`; verify HTTP 200 with `status: rejected`.
+8. **Double-approve guard** — attempt to approve the rejected plan; verify HTTP 409 response.
+
+---
+
+## V3.1 additions (complete)
+
+**V3.1 — Dynamic Workflow Generation**
+- `CapabilityRegistry` — static descriptors for all registered agents, tools, and execution patterns
+- `GoalAnalyzer` — single LLM call converts a natural-language goal into a structured `GoalAnalysis`
+- `PlanBuilder` — deterministic Python: selects agents, tools, pattern, and guardrails; estimates complexity and duration
+- `PlanValidator` — 13 validation checks; produces `ValidationResult` with typed error and warning codes
+- `PlannerService` — single entry point: `GoalAnalyzer → PlanBuilder → PlanValidator`
+- `ExecutionAdapter` — converts `GeneratedWorkflowPlan` → `WorkflowDefinition` → `Orchestrator.run()` (V2 runtime unchanged)
+- `PlanRepository` — persists plans to SQLite (`generated_plans` table); tracks status lifecycle
+- Planner API — `POST /planner/generate`, `GET /planner/{plan_id}`, `POST /planner/{plan_id}/approve`, `POST /planner/{plan_id}/reject`
+- V3.1 scope: one supported goal type (`code_review`). Agents selected from existing registry only. No dynamic agent generation.
+
+**Total: 919 tests passing**
 
 ---
 
 ## V3 roadmap
 
-| Feature | Description |
-|---|---|
-| Dynamic workflow generation | Compose workflows from natural language at runtime — no YAML authoring required |
-| PostgreSQL backend | Replace SQLite with PostgreSQL for production multi-instance deployments |
-| Background task execution | Non-blocking `POST /runs/` with SSE/WebSocket for live progress streaming |
-| Multi-provider LLM | Anthropic Claude and Google Gemini alongside OpenAI, runtime-selectable per agent |
-| Agent memory persistence | Long-term per-agent memory across runs using the `IMemoryStore` interface |
-| Workflow versioning | Immutable workflow snapshots; rerun any past run against its exact original definition |
-| Auth and multi-tenancy | API key authentication and tenant-scoped workflow isolation |
+| Feature | Status | Description |
+|---|---|---|
+| Dynamic workflow generation (V3.1) | **Complete** | Compose workflows from natural language — agents selected from registry, no YAML authoring required |
+| Dynamic agent generation (V3.2) | Planned | Synthesize new `AgentDefinition` objects from templates for goals with no existing agents |
+| Multi-goal support | Planned | Support goal types beyond `code_review`: incident triage, research, data analysis |
+| PostgreSQL backend | Planned | Replace SQLite with PostgreSQL for production multi-instance deployments |
+| Background task execution | Planned | Non-blocking `POST /runs/` with SSE/WebSocket for live progress streaming |
+| Multi-provider LLM | Planned | Anthropic Claude and Google Gemini alongside OpenAI, runtime-selectable per agent |
+| Agent memory persistence | Planned | Long-term per-agent memory across runs using the `IMemoryStore` interface |
+| Workflow versioning | Planned | Immutable workflow snapshots; rerun any past run against its exact original definition |
+| Auth and multi-tenancy | Planned | API key authentication and tenant-scoped workflow isolation |
