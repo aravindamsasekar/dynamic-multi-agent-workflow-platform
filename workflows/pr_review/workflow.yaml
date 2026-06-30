@@ -1,12 +1,14 @@
 workflow_id: pr_review
-name: PR Review
+name: PR Review (Production)
 description: >
-  Reviews a GitHub pull request by fetching PR metadata, changed files, and diff
-  through a single fetch agent, then generating a structured code review.
+  Multi-agent pull request review combining GitHub data collection, knowledge-grounded
+  code quality and risk assessment, and a final synthesis into a structured review report.
 pattern: parallel_specialist
 agent_ids:
-  - github_fetch_agent
+  - pr_data_agent
+  - review_specialist
+  - risk_specialist
 pattern_config:
   strategy: concatenate
-  reviewer_agent_id: review_agent
+  reviewer_agent_id: synthesis_agent
 hitl_enabled: false

@@ -59,7 +59,7 @@ tools:
   - name: knowledge_search
     description: >
       Search the internal knowledge base for coding standards, architecture decisions,
-      and review guidelines relevant to the code being reviewed.
+      security guidelines, and review guidelines relevant to the code being reviewed.
       Use this before writing the final review to retrieve applicable standards.
     input_schema:
       type: object
@@ -74,3 +74,28 @@ tools:
         - coding-standards
         - architecture
       top_k: 5
+
+  - name: mcp_get_pr_comments
+    description: >
+      Retrieves existing review comments and review threads on a pull request via GitHub MCP.
+      Use this to read prior reviewer feedback and avoid duplicating comments already addressed.
+    input_schema:
+      type: object
+      properties:
+        owner:
+          type: string
+          description: Repository owner or organization
+        repo:
+          type: string
+          description: Repository name
+        pull_number:
+          type: integer
+          description: Pull request number
+      required: [owner, repo, pull_number]
+    adapter_type: mcp
+    adapter_config:
+      server_command: npx
+      server_args:
+        - "-y"
+        - "@modelcontextprotocol/server-github"
+      tool_name: list_pull_request_review_comments

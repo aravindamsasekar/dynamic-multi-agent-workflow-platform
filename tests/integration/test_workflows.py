@@ -329,21 +329,27 @@ _GITHUB_PATCH = "platform.tools.github_adapter.httpx.AsyncClient"
 
 
 class TestPRReviewWorkflow:
-    """Exercises the pr_review workflow: single GitHub fetch agent + review agent.
+    """Exercises the 4-agent pr_review workflow: pr_data_agent + two specialists + synthesis.
 
     GitHub HTTP calls are intercepted via mock — no real API calls are made.
+    Queue order with mocked LLM is deterministic: pr_data_agent → review_specialist
+    → risk_specialist → synthesis_agent (mocked I/O never yields to the event loop).
     """
 
     async def test_produces_workflow_result(self) -> None:
         wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=_mock_ks())
         llm = MockLLMProvider([
-            # github_fetch_agent: 3 sequential tool calls then summary
-            _tool_use("tu-1", "github_get_pr", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            # pr_data_agent: 3 GitHub tool calls then structured summary
+            _tool_use("tu-1", "github_get_pr",    {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
             _tool_use("tu-2", "github_get_files", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
-            _tool_use("tu-3", "github_get_diff", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _tool_use("tu-3", "github_get_diff",  {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
             _text("PR #42: Add feature. 2 files changed (+50/-10)."),
-            # review_agent: final review
-            _text("LGTM: clean implementation with good test coverage."),
+            # review_specialist: direct code review (no tool calls in this test)
+            _text("Code quality: clean implementation with clear naming."),
+            # risk_specialist: direct risk assessment (no tool calls in this test)
+            _text("No security issues. Tests cover new logic."),
+            # synthesis_agent: final structured report
+            _text("APPROVED: well-scoped PR with test coverage and no security concerns."),
         ])
         with patch(_GITHUB_PATCH, return_value=_make_github_client()):
             result = await ParallelSpecialistExecutor(llm).execute(
@@ -352,16 +358,18 @@ class TestPRReviewWorkflow:
             )
         assert isinstance(result, WorkflowResult)
         assert result.workflow_id == "pr_review"
-        assert result.output == "LGTM: clean implementation with good test coverage."
+        assert result.output == "APPROVED: well-scoped PR with test coverage and no security concerns."
 
-    async def test_result_contains_both_agents(self) -> None:
+    async def test_result_contains_four_agents(self) -> None:
         wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=_mock_ks())
         llm = MockLLMProvider([
-            _tool_use("tu-1", "github_get_pr", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _tool_use("tu-1", "github_get_pr",    {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
             _tool_use("tu-2", "github_get_files", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
-            _tool_use("tu-3", "github_get_diff", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
-            _text("Fetched PR data."),
-            _text("Review: request changes."),
+            _tool_use("tu-3", "github_get_diff",  {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _text("PR data collected."),
+            _text("Code review: approved."),
+            _text("Risk: low."),
+            _text("APPROVED."),
         ])
         with patch(_GITHUB_PATCH, return_value=_make_github_client()):
             result = await ParallelSpecialistExecutor(llm).execute(
@@ -369,57 +377,64 @@ class TestPRReviewWorkflow:
                 _PR_INPUT,
             )
         agent_ids = [r.agent_id for r in result.agent_results]
-        assert "github_fetch_agent" in agent_ids
-        assert "review_agent" in agent_ids
-        assert len(result.agent_results) == 2
+        assert "pr_data_agent" in agent_ids
+        assert "review_specialist" in agent_ids
+        assert "risk_specialist" in agent_ids
+        assert "synthesis_agent" in agent_ids
+        assert len(result.agent_results) == 4
 
-    async def test_fetch_agent_makes_three_tool_calls(self) -> None:
+    async def test_pr_data_agent_makes_three_github_tool_calls(self) -> None:
         wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=_mock_ks())
         llm = MockLLMProvider([
-            _tool_use("tu-1", "github_get_pr", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _tool_use("tu-1", "github_get_pr",    {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
             _tool_use("tu-2", "github_get_files", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
-            _tool_use("tu-3", "github_get_diff", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _tool_use("tu-3", "github_get_diff",  {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
             _text("All data collected."),
-            _text("Looks good."),
+            _text("Code looks good."),
+            _text("No risks."),
+            _text("APPROVED."),
         ])
         with patch(_GITHUB_PATCH, return_value=_make_github_client()):
             result = await ParallelSpecialistExecutor(llm).execute(
                 _context(wf_reg, ag_reg, tl_reg, "pr_review"),
                 _PR_INPUT,
             )
-        fetch_result = next(r for r in result.agent_results if r.agent_id == "github_fetch_agent")
-        assert fetch_result.tool_calls_made == 3
+        pr_data_result = next(r for r in result.agent_results if r.agent_id == "pr_data_agent")
+        assert pr_data_result.tool_calls_made == 3
 
-    async def test_review_agent_receives_fetch_output(self) -> None:
+    async def test_synthesis_agent_output_is_final_result(self) -> None:
         wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=_mock_ks())
-        fetch_summary = "Title: Add feature. Files: main.py (+20). Diff: +def add_feature()."
+        synthesis_output = "APPROVED: clean PR with good coverage."
         llm = MockLLMProvider([
-            _tool_use("tu-1", "github_get_pr", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _tool_use("tu-1", "github_get_pr",    {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
             _tool_use("tu-2", "github_get_files", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
-            _tool_use("tu-3", "github_get_diff", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
-            _text(fetch_summary),
-            _text("Approved: minimal change, well-scoped."),
+            _tool_use("tu-3", "github_get_diff",  {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _text("PR data."),
+            _text("Code review complete."),
+            _text("Risk review complete."),
+            _text(synthesis_output),
         ])
         with patch(_GITHUB_PATCH, return_value=_make_github_client()):
             result = await ParallelSpecialistExecutor(llm).execute(
                 _context(wf_reg, ag_reg, tl_reg, "pr_review"),
                 _PR_INPUT,
             )
-        fetch_result = next(r for r in result.agent_results if r.agent_id == "github_fetch_agent")
-        assert fetch_result.output == fetch_summary
-        assert result.output == "Approved: minimal change, well-scoped."
+        synthesis_result = next(r for r in result.agent_results if r.agent_id == "synthesis_agent")
+        assert synthesis_result.output == synthesis_output
+        assert result.output == synthesis_output
 
     async def test_owner_repo_pull_number_propagate_to_github_urls(self) -> None:
-        # Proves that owner/repo/pull_number from the tool call args reach the
-        # correct GitHub API URLs — the critical end-to-end propagation check.
         wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=_mock_ks())
         mock_gh = _make_github_client()
         llm = MockLLMProvider([
+            # Only pr_data_agent calls GitHub; specialists give direct text
             _tool_use("tu-1", "github_get_pr",    {"owner": "microsoft", "repo": "vscode", "pull_number": 99}),
             _tool_use("tu-2", "github_get_files", {"owner": "microsoft", "repo": "vscode", "pull_number": 99}),
             _tool_use("tu-3", "github_get_diff",  {"owner": "microsoft", "repo": "vscode", "pull_number": 99}),
             _text("PR data collected."),
-            _text("Looks good."),
+            _text("Review: LGTM."),
+            _text("No risks."),
+            _text("APPROVED."),
         ])
         with patch(_GITHUB_PATCH, return_value=mock_gh):
             await ParallelSpecialistExecutor(llm).execute(
@@ -433,8 +448,6 @@ class TestPRReviewWorkflow:
         assert "https://api.github.com/repos/microsoft/vscode/pulls/99/files" in called_urls
 
     async def test_dict_input_via_orchestrator_reaches_github_urls(self) -> None:
-        # Full end-to-end: POST /runs body → Orchestrator (dict→JSON) → agent →
-        # tool calls → GitHubAdapter → correct API URLs.
         wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=_mock_ks())
         shared_state = SharedState()
         run_manager = RunManager()
@@ -444,6 +457,8 @@ class TestPRReviewWorkflow:
             _tool_use("tu-2", "github_get_files", {"owner": "octocat", "repo": "Hello-World", "pull_number": 1}),
             _tool_use("tu-3", "github_get_diff",  {"owner": "octocat", "repo": "Hello-World", "pull_number": 1}),
             _text("Fetched all PR data."),
+            _text("Code review: clean."),
+            _text("No risks."),
             _text("Approved."),
         ])
         orch = Orchestrator(
@@ -461,14 +476,10 @@ class TestPRReviewWorkflow:
         with patch(_GITHUB_PATCH, return_value=mock_gh):
             result = await orch.run("pr_review", structured_input)
 
-        # Workflow completes successfully
         assert result.workflow_id == "pr_review"
         assert result.output == "Approved."
-
-        # Structured input preserved in SharedState
         assert shared_state.get(result.run_id, "workflow_input") == structured_input
 
-        # Correct GitHub API URLs were called
         called_urls = [call[0][0] for call in mock_gh.get.call_args_list]
         assert len(called_urls) == 3
         assert "https://api.github.com/repos/octocat/Hello-World/pulls/1" in called_urls
@@ -481,10 +492,10 @@ class TestPRReviewWorkflow:
 
 
 class TestPRReviewWithKnowledge:
-    """Verifies PR Review workflow with RAG-augmented review_agent.
+    """Verifies the 4-agent PR Review workflow with knowledge-grounded specialists.
 
-    GitHub and OpenAI calls are mocked. KnowledgeService uses AsyncMock
-    to return controlled SearchResult objects without hitting any index.
+    GitHub and OpenAI calls are mocked. KnowledgeService uses AsyncMock to return
+    controlled SearchResult objects. MCP calls use MCPConnectionManager patches.
     """
 
     # -- Configuration loading ------------------------------------------------
@@ -499,14 +510,19 @@ class TestPRReviewWithKnowledge:
         adapter = tl_reg.get("knowledge_search")
         assert adapter is not None
 
-    def test_review_agent_has_knowledge_search_tool(self) -> None:
+    def test_review_specialist_has_knowledge_search_tool(self) -> None:
         _, ag_reg, _ = _load("pr_review", knowledge_service=_mock_ks())
-        agent = ag_reg.get("review_agent")
+        agent = ag_reg.get("review_specialist")
         assert "knowledge_search" in agent.tool_names
 
-    def test_github_fetch_agent_still_has_three_github_tools(self) -> None:
+    def test_risk_specialist_has_knowledge_search_tool(self) -> None:
         _, ag_reg, _ = _load("pr_review", knowledge_service=_mock_ks())
-        agent = ag_reg.get("github_fetch_agent")
+        agent = ag_reg.get("risk_specialist")
+        assert "knowledge_search" in agent.tool_names
+
+    def test_pr_data_agent_has_three_github_tools(self) -> None:
+        _, ag_reg, _ = _load("pr_review", knowledge_service=_mock_ks())
+        agent = ag_reg.get("pr_data_agent")
         assert set(agent.tool_names) == {"github_get_pr", "github_get_files", "github_get_diff"}
 
     def test_knowledge_search_tool_definition_has_correct_adapter_type(self) -> None:
@@ -522,19 +538,33 @@ class TestPRReviewWithKnowledge:
         assert isinstance(adapter, KnowledgeAdapter)
         assert "coding-standards" in adapter._collections
 
+    def test_mcp_get_pr_comments_tool_registered(self) -> None:
+        _, _, tl_reg = _load("pr_review", knowledge_service=_mock_ks())
+        adapter = tl_reg.get("mcp_get_pr_comments")
+        assert adapter is not None
+        assert isinstance(adapter, MCPAdapter)
+
+    def test_synthesis_agent_has_mcp_tool(self) -> None:
+        _, ag_reg, _ = _load("pr_review", knowledge_service=_mock_ks())
+        agent = ag_reg.get("synthesis_agent")
+        assert "mcp_get_pr_comments" in agent.tool_names
+
     # -- Workflow execution with mocked knowledge -----------------------------
 
     async def test_workflow_completes_when_knowledge_returns_empty(self) -> None:
-        """Baseline: review_agent calls knowledge_search → empty results, still produces review."""
         wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=_mock_ks([]))
         llm = MockLLMProvider([
-            # github_fetch_agent
+            # pr_data_agent
             _tool_use("tu-1", "github_get_pr",    {"owner": "o", "repo": "r", "pull_number": 1}),
             _tool_use("tu-2", "github_get_files", {"owner": "o", "repo": "r", "pull_number": 1}),
             _tool_use("tu-3", "github_get_diff",  {"owner": "o", "repo": "r", "pull_number": 1}),
             _text("PR data collected."),
-            # review_agent: searches knowledge (empty), then writes review
+            # review_specialist: searches knowledge (empty), writes review
             _tool_use("ks-1", "knowledge_search", {"query": "pull request review requirements tests"}),
+            _text("Code review complete."),
+            # risk_specialist: direct
+            _text("Security review complete."),
+            # synthesis_agent
             _text("Approved: clean implementation."),
         ])
         with patch(_GITHUB_PATCH, return_value=_make_github_client()):
@@ -545,8 +575,7 @@ class TestPRReviewWithKnowledge:
         assert isinstance(result, WorkflowResult)
         assert result.output == "Approved: clean implementation."
 
-    async def test_review_agent_calls_knowledge_search(self) -> None:
-        """Verify review_agent actually invokes knowledge_search during the workflow."""
+    async def test_review_specialist_calls_knowledge_search(self) -> None:
         ks = _mock_ks([])
         wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=ks)
         llm = MockLLMProvider([
@@ -556,6 +585,8 @@ class TestPRReviewWithKnowledge:
             _text("PR fetched."),
             _tool_use("ks-1", "knowledge_search", {"query": "coding standards"}),
             _text("Review complete."),
+            _text("No risks."),
+            _text("APPROVED."),
         ])
         with patch(_GITHUB_PATCH, return_value=_make_github_client()):
             await ParallelSpecialistExecutor(llm).execute(
@@ -564,7 +595,7 @@ class TestPRReviewWithKnowledge:
             )
         ks.search.assert_called_once()
         call_args = ks.search.call_args
-        assert call_args[0][0] == "coding standards"  # query
+        assert call_args[0][0] == "coding standards"
 
     async def test_knowledge_search_called_with_correct_collections(self) -> None:
         ks = _mock_ks([])
@@ -576,6 +607,8 @@ class TestPRReviewWithKnowledge:
             _text("PR fetched."),
             _tool_use("ks-1", "knowledge_search", {"query": "test requirements"}),
             _text("Done."),
+            _text("No risk."),
+            _text("APPROVED."),
         ])
         with patch(_GITHUB_PATCH, return_value=_make_github_client()):
             await ParallelSpecialistExecutor(llm).execute(
@@ -586,8 +619,7 @@ class TestPRReviewWithKnowledge:
         collections = call_args[0][1]  # second positional arg
         assert "coding-standards" in collections
 
-    async def test_retrieved_knowledge_appears_in_review_agent_context(self) -> None:
-        """The SearchResult text returned by the service must reach the agent via ToolResult."""
+    async def test_retrieved_knowledge_appears_in_review_context(self) -> None:
         standards_text = "Every PR must include tests for all changed business logic."
         ks = _mock_ks([
             SearchResult(
@@ -599,35 +631,14 @@ class TestPRReviewWithKnowledge:
             )
         ])
         wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=ks)
-
-        # Capture what the review_agent receives after knowledge_search completes
-        captured_inputs: list[str] = []
-
-        class _CaptureLLM(MockLLMProvider):
-            def __init__(self, responses):
-                super().__init__(responses)
-                self._call_count = 0
-
-            async def complete(self, messages, tools=None):
-                self._call_count += 1
-                # The second call to the review agent (after tool result) will
-                # have the knowledge search result in the messages
-                if self._call_count >= 2:
-                    for m in messages:
-                        if hasattr(m, "content") and isinstance(m.content, str):
-                            captured_inputs.append(m.content)
-                        elif hasattr(m, "content") and isinstance(m.content, list):
-                            for c in m.content:
-                                if hasattr(c, "content") and isinstance(c.content, str):
-                                    captured_inputs.append(c.content)
-                return await super().complete(messages, tools)
-
-        llm = _CaptureLLM([
+        llm = MockLLMProvider([
             _tool_use("tu-1", "github_get_pr",    {"owner": "o", "repo": "r", "pull_number": 1}),
             _tool_use("tu-2", "github_get_files", {"owner": "o", "repo": "r", "pull_number": 1}),
             _tool_use("tu-3", "github_get_diff",  {"owner": "o", "repo": "r", "pull_number": 1}),
-            _text("PR fetched."),
+            _text("PR data."),
             _tool_use("ks-1", "knowledge_search", {"query": "test requirements"}),
+            _text("Request Changes: tests are missing per coding standards."),
+            _text("Security: no issues."),
             _text("Request Changes: tests are missing per our coding standards."),
         ])
         with patch(_GITHUB_PATCH, return_value=_make_github_client()):
@@ -635,13 +646,10 @@ class TestPRReviewWithKnowledge:
                 _context(wf_reg, ag_reg, tl_reg, "pr_review"),
                 _PR_INPUT,
             )
-        # The review agent successfully used knowledge_search and produced a review
         assert "Request Changes" in result.output
-        # The service was called and returned a result
         ks.search.assert_called_once()
 
     async def test_multiple_knowledge_searches_all_succeed(self) -> None:
-        """review_agent may search multiple times — each returns results correctly."""
         ks = _mock_ks([])
         wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=ks)
         llm = MockLLMProvider([
@@ -652,23 +660,56 @@ class TestPRReviewWithKnowledge:
             _tool_use("ks-1", "knowledge_search", {"query": "test requirements"}),
             _tool_use("ks-2", "knowledge_search", {"query": "error handling standards"}),
             _text("Review: Approve."),
+            _text("No risk."),
+            _text("APPROVED."),
         ])
         with patch(_GITHUB_PATCH, return_value=_make_github_client()):
             result = await ParallelSpecialistExecutor(llm).execute(
                 _context(wf_reg, ag_reg, tl_reg, "pr_review"),
                 _PR_INPUT,
             )
-        assert result.output == "Review: Approve."
+        assert result.output == "APPROVED."
         assert ks.search.call_count == 2
 
+    async def test_synthesis_agent_calls_mcp_get_pr_comments(self) -> None:
+        ks = _mock_ks([])
+        wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=ks)
+        mcp_session = _make_mcp_session(
+            tool_names=["list_pull_request_review_comments"],
+            call_text="Prior review: LGTM from @reviewer",
+        )
+        mcp_stdio = _make_mcp_stdio()
+        llm = MockLLMProvider([
+            _tool_use("tu-1", "github_get_pr",    {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _tool_use("tu-2", "github_get_files", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _tool_use("tu-3", "github_get_diff",  {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _text("PR data."),
+            _text("Code review."),
+            _text("Risk assessment."),
+            # synthesis_agent: calls mcp_get_pr_comments then finalizes
+            _tool_use("mcp-1", "mcp_get_pr_comments", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
+            _text("APPROVED with prior review context."),
+        ])
+        with patch(_MCP_PARAMS_PATCH), \
+             patch(_MCP_SESSION_PATCH, return_value=mcp_session), \
+             patch(_MCP_STDIO_PATCH, return_value=mcp_stdio), \
+             patch(_GITHUB_PATCH, return_value=_make_github_client()):
+            result = await ParallelSpecialistExecutor(llm).execute(
+                _context(wf_reg, ag_reg, tl_reg, "pr_review"),
+                _PR_INPUT,
+            )
+        assert result.output == "APPROVED with prior review context."
+        mcp_session.call_tool.assert_called_once()
+
     async def test_existing_github_only_path_still_works(self) -> None:
-        """Existing tests using the workflow without explicit knowledge_search calls still pass."""
         wf_reg, ag_reg, tl_reg = _load("pr_review", knowledge_service=_mock_ks())
         llm = MockLLMProvider([
             _tool_use("tu-1", "github_get_pr",    {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
             _tool_use("tu-2", "github_get_files", {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
             _tool_use("tu-3", "github_get_diff",  {"owner": "octocat", "repo": "Hello-World", "pull_number": 42}),
             _text("PR #42: Add feature. 2 files changed (+50/-10)."),
+            _text("Architecture looks clean."),
+            _text("No security issues detected."),
             _text("LGTM: clean implementation with good test coverage."),
         ])
         with patch(_GITHUB_PATCH, return_value=_make_github_client()):
