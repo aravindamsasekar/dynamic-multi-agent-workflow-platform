@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
+from platform.extensions.models import InstallSuggestion
+
 
 # ---------------------------------------------------------------------------
 # Enums shared across planner phases
@@ -131,6 +133,11 @@ class GeneratedWorkflowPlan:
     estimated_duration_seconds: int
     task_label: str = ""
     runtime_agents: list["RuntimeAgentDefinition"] = field(default_factory=list)
+    # Phase 3 — capability marketplace fields
+    executable: bool = True
+    missing_capabilities: list[str] = field(default_factory=list)
+    install_suggestions: list[InstallSuggestion] = field(default_factory=list)
+    unsupported: bool = False
 
 
 class OperationType(str, Enum):

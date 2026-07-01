@@ -166,18 +166,49 @@ class GoalAnalyzer:
     planner steps are deterministic and receive the GoalAnalysis as input.
 
     Args:
-        llm:      Any ILLMProvider. Tests inject MockLLMProvider.
-        registry: CapabilityRegistry whose summary and capability allow-list
-                  are injected into the system prompt.
+        llm:                Any ILLMProvider. Tests inject MockLLMProvider.
+        registry:           CapabilityRegistry whose summary and installed capability
+                            allow-list are injected into the system prompt.
+        extra_capabilities: Additional capability names to include in the LLM allow-list
+                            beyond what is installed (e.g., marketplace catalog capabilities).
+                            These allow the LLM to request capabilities that exist in the
+                            catalog but are not yet installed, enabling the pending_install flow.
     """
 
-    def __init__(self, llm: ILLMProvider, registry: CapabilityRegistry) -> None:
+    def __init__(
+        self,
+        llm: ILLMProvider,
+        registry: CapabilityRegistry,
+        extra_capabilities: frozenset[str] = frozenset(),
+        extra_capability_descriptions: dict[str, str] | None = None,
+    ) -> None:
         self._llm = llm
         self._registry = registry
+        self._extra_capabilities = extra_capabilities
+        self._extra_capability_descriptions: dict[str, str] = extra_capability_descriptions or {}
 
     def _build_system_prompt(self) -> str:
-        allowed = sorted(self._registry.all_capabilities())
-        capability_list = "\n".join(f"- {cap}" for cap in allowed)
+        installed = frozenset(self._registry.all_capabilities())
+        all_caps = sorted(installed | self._extra_capabilities)
+
+        # Annotate capabilities that have marketplace descriptions, whether installed or not.
+        # This is necessary because:
+        # - Before install: LLM must know "filesystem_read" handles file reads to request it.
+        # - After install: the description is gone from the allow-list and the LLM reverts
+        #   to not recognizing the capability.
+        # The "install from marketplace" suffix only appears when the capability is not yet installed.
+        cap_lines: list[str] = []
+        for cap in all_caps:
+            if cap in self._extra_capability_descriptions:
+                desc = self._extra_capability_descriptions[cap]
+                if cap not in installed:
+                    cap_lines.append(f"- {cap}  ({desc} - install from marketplace to enable)")
+                else:
+                    cap_lines.append(f"- {cap}  ({desc})")
+            else:
+                cap_lines.append(f"- {cap}")
+        capability_list = "\n".join(cap_lines)
+
         return _SYSTEM_PROMPT_TEMPLATE.format(
             capability_list=capability_list,
             registry_summary=self._registry.to_prompt_summary(),
@@ -199,5 +230,5 @@ class GoalAnalyzer:
         if not raw_text:
             raise PlannerError("LLM returned no text content")
 
-        allowed = frozenset(self._registry.all_capabilities())
+        allowed = frozenset(self._registry.all_capabilities()) | self._extra_capabilities
         return _parse_goal_analysis(raw_text, allowed)

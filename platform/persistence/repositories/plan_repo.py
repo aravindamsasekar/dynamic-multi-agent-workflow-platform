@@ -59,6 +59,23 @@ class PlanRepository:
             row.updated_at = now
         return len(rows)
 
+    def update(
+        self,
+        session: Session,
+        plan_id: str,
+        plan: GeneratedWorkflowPlan,
+        validation: ValidationResult,
+        status: str,
+    ) -> None:
+        """Update an existing plan row in-place (used during pending_install regeneration)."""
+        row = session.get(GeneratedPlanRow, plan_id)
+        if row is None:
+            return
+        row.plan_json = plan_to_json(plan)
+        row.validation_json = validation_to_json(validation)
+        row.status = status
+        row.updated_at = datetime.utcnow()
+
     def update_status(
         self,
         session: Session,

@@ -10,6 +10,10 @@ import yaml
 from sqlalchemy.orm import Session, sessionmaker
 
 from platform.config.loader import ConfigLoader
+from platform.extensions.catalog import ExtensionCatalog
+from platform.extensions.installer import PackageInstaller
+from platform.extensions.manager import CapabilityManager
+from platform.persistence.repositories.package_repo import InstalledExtensionStore
 from platform.core.interfaces.llm import ILLMProvider
 from platform.core.models.tool import AdapterType, ToolDefinition
 from platform.hitl.approval_manager import ApprovalManager
@@ -30,7 +34,6 @@ from platform.persistence.database import Base, build_engine, build_session_fact
 from platform.persistence.repositories.plan_repo import PlanRepository
 from platform.planner.capability_registry import CapabilityRegistry
 from platform.planner.execution_adapter import ExecutionAdapter
-from platform.planner.models import OperationType, ToolCapabilityDescriptor
 from platform.planner.planner_service import PlannerService
 from platform.tools.filesystem_adapter import FilesystemAdapter
 from platform.policy.engine import PolicyEngine
@@ -39,6 +42,9 @@ from platform.registries.tool_registry import ToolRegistry
 from platform.registries.workflow_registry import WorkflowRegistry
 from platform.state.shared_state import SharedState
 
+_extension_catalog: ExtensionCatalog | None = None
+_installed_extension_store: InstalledExtensionStore | None = None
+_package_installer: PackageInstaller | None = None
 _orchestrator: Orchestrator | None = None
 _run_manager: RunManager | None = None
 _hitl_manager: ApprovalManager | None = None
@@ -48,6 +54,7 @@ _session_factory: sessionmaker[Session] | None = None
 _knowledge_service: KnowledgeService | None = None
 _knowledge_indexer: KnowledgeIndexer | None = None
 _capability_registry: CapabilityRegistry | None = None
+_capability_manager: CapabilityManager | None = None
 _planner_service: PlannerService | None = None
 _execution_adapter: ExecutionAdapter | None = None
 
@@ -57,9 +64,13 @@ def initialize(
     knowledge_config_path: Path | None = None,
 ) -> None:
     """Create and wire all platform singletons. Called once from lifespan."""
+    global _extension_catalog, _installed_extension_store, _package_installer
     global _orchestrator, _run_manager, _hitl_manager, _workflow_registry
     global _tool_registry, _session_factory, _knowledge_service, _knowledge_indexer
-    global _capability_registry, _planner_service, _execution_adapter
+    global _capability_registry, _capability_manager, _planner_service, _execution_adapter
+
+    # 1a. Extension catalog — loaded from static YAML manifests; no DB required
+    _extension_catalog = ExtensionCatalog.load(Path("resources/extensions"))
 
     # 1. Database — must come first so knowledge stack can use session_factory
     database_url = os.environ.get("DATABASE_URL", "sqlite:///./workflow.db")
@@ -144,24 +155,39 @@ def initialize(
 
     # V3 planner stack
     cap_registry = CapabilityRegistry.build_pr_review_registry()
-    # Extend with filesystem capability for generated-agent path.
-    cap_registry.register_tool(ToolCapabilityDescriptor(
-        tool_name="filesystem_read_file",
-        name="Filesystem Read File",
-        description="Reads a local file and returns its UTF-8 contents.",
-        capabilities=["filesystem_read"],
-        operation_type=OperationType.READ,
-        data_source="local",
-    ))
-    cap_registry.register_generatable_capability("filesystem_read")
+    # NOTE: filesystem_read capability is intentionally NOT pre-registered here.
+    # The marketplace starts empty; capabilities are added only when the user installs
+    # the filesystem-reader extension via POST /extensions/install. This allows
+    # CapabilityManager.resolve() to correctly detect missing capabilities and surface
+    # install suggestions for goals requiring filesystem_read.
     _capability_registry = cap_registry
-    _planner_service = PlannerService(llm=llm_provider, registry=cap_registry)
+    _capability_manager = CapabilityManager(
+        catalog=_extension_catalog,
+        capability_registry=cap_registry,
+    )
+    _planner_service = PlannerService(
+        llm=llm_provider,
+        registry=cap_registry,
+        capability_manager=_capability_manager,
+    )
     _execution_adapter = ExecutionAdapter(
         orchestrator=orchestrator,
         workflow_registry=wf_registry,
         agent_registry=ag_registry,
         capability_registry=cap_registry,
     )
+
+    # Package system — wired after V3 registries so restore_from_db() adds
+    # marketplace tools idempotently on top of the V3 baseline.
+    _installed_extension_store = InstalledExtensionStore()
+    _package_installer = PackageInstaller(
+        catalog=_extension_catalog,
+        store=_installed_extension_store,
+        tool_registry=tl_registry,
+        capability_registry=cap_registry,
+    )
+    with session_factory() as _restore_session:
+        _package_installer.restore_from_db(_restore_session)
 
 
 def _build_knowledge_stack(
@@ -280,6 +306,12 @@ def get_capability_registry() -> CapabilityRegistry:
     return _capability_registry
 
 
+def get_capability_manager() -> CapabilityManager:
+    if _capability_manager is None:
+        raise RuntimeError("Platform not initialized — call initialize() first")
+    return _capability_manager
+
+
 def get_planner_service() -> PlannerService:
     if _planner_service is None:
         raise RuntimeError("Platform not initialized — call initialize() first")
@@ -290,3 +322,21 @@ def get_execution_adapter() -> ExecutionAdapter:
     if _execution_adapter is None:
         raise RuntimeError("Platform not initialized — call initialize() first")
     return _execution_adapter
+
+
+def get_extension_catalog() -> ExtensionCatalog:
+    if _extension_catalog is None:
+        raise RuntimeError("Platform not initialized — call initialize() first")
+    return _extension_catalog
+
+
+def get_installed_extension_store() -> InstalledExtensionStore:
+    if _installed_extension_store is None:
+        raise RuntimeError("Platform not initialized — call initialize() first")
+    return _installed_extension_store
+
+
+def get_package_installer() -> PackageInstaller:
+    if _package_installer is None:
+        raise RuntimeError("Platform not initialized — call initialize() first")
+    return _package_installer

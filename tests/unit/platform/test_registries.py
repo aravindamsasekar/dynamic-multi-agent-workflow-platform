@@ -189,11 +189,11 @@ class TestToolRegistry:
         assert registry.list_all() == []
         assert registry.exists("search") is False
 
-    def test_register_overwrites_existing(self):
+    def test_register_skips_duplicate(self):
         registry = ToolRegistry()
         a1 = _StubAdapter()
         a2 = _StubAdapter()
         registry.register("search", a1)
-        registry.register("search", a2)
-        assert registry.get("search") is a2
+        registry.register("search", a2)  # idempotent — first registration wins
+        assert registry.get("search") is a1
         assert len(registry.list_all()) == 1

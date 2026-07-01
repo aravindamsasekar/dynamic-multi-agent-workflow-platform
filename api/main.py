@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from api.dependencies import initialize, run_startup_indexing, shutdown
+from api.routers import extensions as extensions_router
 from api.routers import hitl as hitl_router
 from api.routers import knowledge as knowledge_router
 from api.routers import planner as planner_router
@@ -43,6 +44,7 @@ async def _run_not_found(request, exc: RunNotFound):
     return JSONResponse(status_code=404, content={"detail": str(exc)})
 
 
+app.include_router(extensions_router.router, prefix="/extensions", tags=["extensions"])
 app.include_router(workflows_router.router, prefix="/workflows", tags=["workflows"])
 app.include_router(runs_router.router, prefix="/runs", tags=["runs"])
 app.include_router(hitl_router.router, prefix="/runs", tags=["hitl"])

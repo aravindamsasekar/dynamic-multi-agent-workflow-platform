@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from platform.extensions.models import InstallSuggestion, PermissionSummary
 from platform.planner.models import (
     GeneratedWorkflowPlan,
     GoalAnalysis,
@@ -45,6 +46,22 @@ def plan_to_json(plan: GeneratedWorkflowPlan) -> str:
         "estimated_complexity": plan.estimated_complexity,
         "estimated_duration_seconds": plan.estimated_duration_seconds,
         "task_label": plan.task_label,
+        "executable": plan.executable,
+        "missing_capabilities": plan.missing_capabilities,
+        "install_suggestions": [
+            {
+                "extension_id": s.extension_id,
+                "name": s.name,
+                "description": s.description,
+                "capabilities_provided": s.capabilities_provided,
+                "permissions": [
+                    {"id": p.id, "risk_level": p.risk_level}
+                    for p in s.permissions
+                ],
+            }
+            for s in plan.install_suggestions
+        ],
+        "unsupported": plan.unsupported,
     }
     return json.dumps(d)
 
@@ -96,6 +113,21 @@ def plan_from_json(json_str: str) -> GeneratedWorkflowPlan:
             for agent_id in d.get("selected_agents", [])
         ]
 
+    raw_suggestions = d.get("install_suggestions", [])
+    install_suggestions = [
+        InstallSuggestion(
+            extension_id=s["extension_id"],
+            name=s["name"],
+            description=s["description"],
+            capabilities_provided=s["capabilities_provided"],
+            permissions=[
+                PermissionSummary(id=p["id"], risk_level=p["risk_level"])
+                for p in s.get("permissions", [])
+            ],
+        )
+        for s in raw_suggestions
+    ]
+
     return GeneratedWorkflowPlan(
         plan_id=d["plan_id"],
         user_goal=d["user_goal"],
@@ -111,6 +143,10 @@ def plan_from_json(json_str: str) -> GeneratedWorkflowPlan:
         estimated_complexity=d["estimated_complexity"],
         estimated_duration_seconds=d["estimated_duration_seconds"],
         task_label=d.get("task_label", ""),
+        executable=d.get("executable", True),
+        missing_capabilities=d.get("missing_capabilities", []),
+        install_suggestions=install_suggestions,
+        unsupported=d.get("unsupported", False),
     )
 
 

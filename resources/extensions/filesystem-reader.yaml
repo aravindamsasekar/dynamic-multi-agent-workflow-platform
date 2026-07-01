@@ -1,0 +1,36 @@
+id: filesystem-reader
+name: Filesystem Reader
+version: "1.0.0"
+description: Read local files and return their UTF-8 contents.
+category: filesystem
+provides:
+  - runtime_agent
+dependencies: []
+capabilities:
+  - filesystem_read
+tools:
+  - name: filesystem_read_file
+    description: Read a local file and return its UTF-8 text contents.
+    adapter_type: filesystem
+    adapter_config: {}
+    input_schema:
+      type: object
+      properties:
+        path:
+          type: string
+          description: File path relative to the working directory
+      required: [path]
+agents: []
+agent_prompts:
+  - capability: filesystem_read
+    system_prompt: |
+      You are a file reading agent. When asked to read a file, call
+      filesystem_read_file with the appropriate path argument and return
+      the file contents verbatim.
+permissions:
+  - id: read_local_files_readonly
+    display_name: Read local files (read-only)
+    description: >
+      Allows the platform to read files from the local filesystem.
+      No write, delete, or execute access is granted.
+    risk_level: low

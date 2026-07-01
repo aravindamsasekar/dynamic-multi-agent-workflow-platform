@@ -24,7 +24,14 @@ class ToolRegistry:
         adapter: IToolAdapter,
         tool_def: ToolDefinition | None = None,
     ) -> None:
-        """Register a tool adapter, and optionally its ToolDefinition for LLM tool prompting."""
+        """Register a tool adapter. Idempotent — skips if tool_name is already registered.
+
+        Skipping (rather than overwriting) allows the startup sequence and the
+        PackageInstaller.restore_from_db() path to both call register() safely
+        without the second call clobbering the first.
+        """
+        if tool_name in self._store:
+            return
         self._store[tool_name] = adapter
         if tool_def is not None:
             self._definitions[tool_name] = tool_def

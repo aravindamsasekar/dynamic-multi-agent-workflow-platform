@@ -76,3 +76,25 @@ class KnowledgeChunkRow(Base):
     source_file: Mapped[str] = mapped_column(String, nullable=False)
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     chunk_hash: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class InstalledPackageRow(Base):
+    __tablename__ = "installed_packages"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # package_id / extension_id
+    version: Mapped[str] = mapped_column(String, nullable=False)
+    installed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    auto_installed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    permissions_granted: Mapped[str] = mapped_column(Text, nullable=False)  # JSON array
+    status: Mapped[str] = mapped_column(String, nullable=False, default="active")
+
+
+class InstallHistoryRow(Base):
+    __tablename__ = "install_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    package_id: Mapped[str] = mapped_column(String, nullable=False)
+    action: Mapped[str] = mapped_column(String, nullable=False)   # "install"
+    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    permissions: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)

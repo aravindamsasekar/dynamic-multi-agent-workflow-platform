@@ -53,6 +53,19 @@ class RuntimeAgentResponse(BaseModel):
     generated: bool
 
 
+class PermissionSummaryResponse(BaseModel):
+    id: str
+    risk_level: str
+
+
+class InstallSuggestionResponse(BaseModel):
+    extension_id: str
+    name: str
+    description: str
+    capabilities_provided: list[str]
+    permissions: list[PermissionSummaryResponse]
+
+
 class GeneratePlanResponse(BaseModel):
     plan_id: str
     goal: str
@@ -71,6 +84,9 @@ class GeneratePlanResponse(BaseModel):
     estimated_complexity: str
     estimated_duration_seconds: int
     validation: ValidationResultResponse
+    missing_capabilities: list[str] = []
+    install_suggestions: list[InstallSuggestionResponse] = []
+    unsupported: bool = False
 
 
 class ApprovePlanRequest(BaseModel):

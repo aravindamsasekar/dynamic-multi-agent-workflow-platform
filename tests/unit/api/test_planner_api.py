@@ -586,6 +586,7 @@ class TestGeneratedAgentPlan:
                     errors=[ValidationError(code="MISSING_AGENT", message="Agent missing.")],
                     warnings=[],
                 )
+                plan.executable = invalid.is_valid  # mirror what PlannerService does
                 return plan, invalid
 
         _test_app.dependency_overrides[get_planner_service] = lambda: _InvalidPlannerService()
