@@ -186,8 +186,14 @@ def initialize(
         tool_registry=tl_registry,
         capability_registry=cap_registry,
     )
-    with session_factory() as _restore_session:
-        _package_installer.restore_from_db(_restore_session)
+    with session_factory() as _startup_session:
+        # Auto-install platform default extensions on first startup.
+        # Subsequent startups skip auto-install because is_installed() returns True.
+        _auto_install_defaults(_startup_session)
+        _startup_session.commit()
+        # Restore all active packages (including auto-installed ones). Static-agent
+        # packages are no-ops in restore; runtime_agent packages re-register tools.
+        _package_installer.restore_from_db(_startup_session)
 
 
 def _build_knowledge_stack(
@@ -216,6 +222,51 @@ def _build_knowledge_stack(
             file=sys.stderr,
         )
         return None, None
+
+
+def _auto_install_defaults(session: Session) -> None:
+    """Install platform default extensions on first startup.
+
+    GitHub Integration and Knowledge Search are auto-installed so they appear in the
+    marketplace as installed from day one. They use the static_agent path, so no runtime
+    registration occurs here — the V3 path (ConfigLoader + build_pr_review_registry)
+    continues to own that. Subsequent startups skip auto-install because is_installed()
+    returns True.
+
+    Knowledge Search is conditional: if knowledge_config.yaml is absent or initialisation
+    failed, _knowledge_service is None and the extension is not auto-installed.
+    """
+    defaults: list[tuple[str, bool]] = [
+        ("github-integration", True),
+        ("knowledge-search", _knowledge_service is not None),
+    ]
+    for ext_id, condition in defaults:
+        if not condition:
+            continue
+        if _installed_extension_store is None or _extension_catalog is None or _package_installer is None:
+            break
+        if _installed_extension_store.is_installed(session, ext_id):
+            continue
+        pkg = _extension_catalog.get(ext_id)
+        if pkg is None:
+            print(
+                f"[WARNING] Default extension {ext_id!r} not found in catalog; skipping.",
+                file=sys.stderr,
+            )
+            continue
+        permissions = [p.id for p in pkg.permissions]
+        try:
+            _package_installer.install(
+                extension_id=ext_id,
+                permissions_granted=permissions,
+                session=session,
+                auto_installed=True,
+            )
+        except Exception as exc:
+            print(
+                f"[WARNING] Auto-install of {ext_id!r} failed: {exc}",
+                file=sys.stderr,
+            )
 
 
 async def run_startup_indexing() -> dict[str, int]:

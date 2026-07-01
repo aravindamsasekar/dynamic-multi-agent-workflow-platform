@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from api.dependencies import initialize, run_startup_indexing, shutdown
 from api.routers import extensions as extensions_router
@@ -50,3 +51,8 @@ app.include_router(runs_router.router, prefix="/runs", tags=["runs"])
 app.include_router(hitl_router.router, prefix="/runs", tags=["hitl"])
 app.include_router(knowledge_router.router, prefix="/knowledge", tags=["knowledge"])
 app.include_router(planner_router.router, prefix="/planner", tags=["planner"])
+
+# Serve the compiled React UI — API routes above take priority over static files.
+_UI_DIST = Path(__file__).resolve().parent.parent / "ui" / "dist"
+if _UI_DIST.exists():
+    app.mount("/", StaticFiles(directory=str(_UI_DIST), html=True), name="ui")

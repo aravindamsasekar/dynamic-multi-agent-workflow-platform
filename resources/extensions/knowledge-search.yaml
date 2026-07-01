@@ -1,0 +1,41 @@
+id: knowledge-search
+name: Knowledge Search
+version: "1.0.0"
+description: >
+  Semantic search over local knowledge collections (coding standards, architecture
+  docs, security guidelines). Powers knowledge-grounded code review and research.
+category: knowledge
+provides:
+  - static_agent
+dependencies: []
+capabilities:
+  - search_knowledge
+  - search_coding_standards
+  - search_architecture
+tools:
+  - name: knowledge_search
+    description: >
+      Search the internal knowledge base for coding standards, architecture decisions,
+      security guidelines, and review guidelines relevant to the code being reviewed.
+    adapter_type: knowledge
+    adapter_config:
+      collections:
+        - coding-standards
+        - architecture
+      top_k: 5
+    input_schema:
+      type: object
+      properties:
+        query:
+          type: string
+          description: Natural-language description of what you are looking for
+      required: [query]
+agents: []
+agent_prompts: []
+permissions:
+  - id: read_knowledge_base_readonly
+    display_name: Read knowledge base (read-only)
+    description: >
+      Allows the platform to read and perform semantic search over the local FAISS
+      knowledge base. No documents are written, modified, or deleted.
+    risk_level: low

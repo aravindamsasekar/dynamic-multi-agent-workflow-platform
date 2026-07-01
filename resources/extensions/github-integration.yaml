@@ -1,0 +1,156 @@
+id: github-integration
+name: GitHub Integration
+version: "1.0.0"
+description: >
+  Multi-agent pull request review. Fetches PR metadata, diffs, and changed files
+  from GitHub, then runs parallel code quality and risk assessment with a final
+  synthesis report.
+category: github
+provides:
+  - static_agent
+dependencies: []
+capabilities:
+  - fetch_pr_data
+  - fetch_github_diff
+  - fetch_changed_files
+  - review_code_quality
+  - assess_architecture
+  - check_standards
+  - assess_security
+  - assess_testing
+  - assess_reliability
+  - synthesize_findings
+  - produce_final_report
+tools:
+  - name: github_get_pr
+    description: Fetches pull request metadata including title, body, state, and author.
+    adapter_type: github
+    adapter_config:
+      operation: get_pull_request
+    input_schema:
+      type: object
+      properties:
+        owner:
+          type: string
+          description: Repository owner or organization
+        repo:
+          type: string
+          description: Repository name
+        pull_number:
+          type: integer
+          description: Pull request number
+      required: [owner, repo, pull_number]
+  - name: github_get_files
+    description: Lists files changed in the pull request with additions, deletions, and patch status.
+    adapter_type: github
+    adapter_config:
+      operation: get_changed_files
+    input_schema:
+      type: object
+      properties:
+        owner:
+          type: string
+          description: Repository owner or organization
+        repo:
+          type: string
+          description: Repository name
+        pull_number:
+          type: integer
+          description: Pull request number
+      required: [owner, repo, pull_number]
+  - name: github_get_diff
+    description: Returns the raw unified diff for all changed files in the pull request.
+    adapter_type: github
+    adapter_config:
+      operation: get_diff
+    input_schema:
+      type: object
+      properties:
+        owner:
+          type: string
+          description: Repository owner or organization
+        repo:
+          type: string
+          description: Repository name
+        pull_number:
+          type: integer
+          description: Pull request number
+      required: [owner, repo, pull_number]
+  - name: mcp_get_pr_comments
+    description: >
+      Retrieves existing review comments and review threads on a pull request via GitHub MCP.
+    adapter_type: mcp
+    adapter_config:
+      server_command: npx
+      server_args:
+        - "-y"
+        - "@modelcontextprotocol/server-github"
+      tool_name: list_pull_request_review_comments
+    input_schema:
+      type: object
+      properties:
+        owner:
+          type: string
+          description: Repository owner or organization
+        repo:
+          type: string
+          description: Repository name
+        pull_number:
+          type: integer
+          description: Pull request number
+      required: [owner, repo, pull_number]
+agents:
+  - id: pr_data_agent
+    name: PR Data Agent
+    description: Fetches pull request metadata, changed files, and the unified diff from GitHub.
+    capabilities:
+      - fetch_pr_data
+      - fetch_github_diff
+      - fetch_changed_files
+    consumes: []
+    produces:
+      - pr_metadata
+      - pr_diff
+      - changed_files
+  - id: review_specialist
+    name: Code Review Specialist
+    description: Reviews code quality, architecture, and maintainability using the diff and knowledge base.
+    capabilities:
+      - review_code_quality
+      - assess_architecture
+      - check_standards
+    consumes:
+      - pr_diff
+    produces:
+      - code_quality_report
+  - id: risk_specialist
+    name: Risk Assessment Specialist
+    description: Assesses security, testing, reliability, and performance risks.
+    capabilities:
+      - assess_security
+      - assess_testing
+      - assess_reliability
+    consumes:
+      - pr_diff
+    produces:
+      - risk_assessment_report
+  - id: synthesis_agent
+    name: Synthesis Agent
+    description: Synthesizes specialist findings into a final structured PR review report.
+    capabilities:
+      - synthesize_findings
+      - produce_final_report
+    consumes:
+      - code_quality_report
+      - risk_assessment_report
+    produces:
+      - final_review_report
+agent_prompts: []
+permissions:
+  - id: read_github_prs_readonly
+    display_name: Read GitHub pull requests (read-only)
+    description: >
+      Allows the platform to read pull request metadata, diffs, and changed files
+      from the GitHub REST API. Requires GITHUB_TOKEN environment variable for
+      private repositories. No write access to GitHub is granted.
+    risk_level: low

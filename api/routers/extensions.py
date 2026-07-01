@@ -45,6 +45,7 @@ def _to_extension_response(pkg: CapabilityPackage, *, installed: bool) -> Extens
         description=pkg.description,
         category=pkg.category,
         capabilities=pkg.capabilities,
+        tool_names=[t.name for t in pkg.tools],
         provides=pkg.provides,
         permissions=[
             PackagePermissionResponse(
@@ -68,6 +69,7 @@ def _to_installed_response(
         name=pkg.name,
         version=row.version,
         installed_at=row.installed_at.isoformat() + "Z",
+        auto_installed=bool(row.auto_installed),
         capabilities_active=list(pkg.capabilities),
         permissions_granted=permissions,
     )

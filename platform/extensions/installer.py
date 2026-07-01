@@ -105,6 +105,7 @@ class PackageInstaller:
         extension_id: str,
         permissions_granted: list[str],
         session: Session,
+        auto_installed: bool = False,
     ) -> InstallResult:
         """Install an extension: validate, register, persist.
 
@@ -139,6 +140,7 @@ class PackageInstaller:
             package_id=extension_id,
             version=pkg.version,
             permissions_granted=permissions_granted,
+            auto_installed=auto_installed,
         )
         self._store.record_history(
             session,
@@ -166,7 +168,21 @@ class PackageInstaller:
         """Register tools and capabilities for a package. Idempotent.
 
         Shared by install() and restore_from_db(). Does not write to the DB.
+
+        Static-agent extensions (provides: [static_agent]) declare their tools and
+        agents as catalog metadata only. Runtime registration is owned by the V3 path
+        (ConfigLoader + build_pr_review_registry). This method deliberately skips all
+        registry writes for static_agent packages so the two paths never conflict.
         """
+        if "static_agent" in pkg.provides:
+            return InstallResult(
+                extension_id=pkg.id,
+                name=pkg.name,
+                version=pkg.version,
+                capabilities_added=list(pkg.capabilities),
+                tools_added=[t.name for t in pkg.tools],
+            )
+
         tools_added: list[str] = []
 
         for tool in pkg.tools:
