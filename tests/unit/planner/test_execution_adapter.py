@@ -14,7 +14,6 @@ from platform.planner.models import (
     GoalAnalysis,
     GuardrailConfig,
     RiskLevel,
-    TaskType,
 )
 
 
@@ -68,7 +67,6 @@ def _make_plan(
         plan_id=plan_id,
         user_goal="Review PR #42",
         goal_analysis=GoalAnalysis(
-            task_type=TaskType.CODE_REVIEW,
             required_capabilities=["fetch_pr_data", "review_code_quality", "synthesize_findings"],
             risk_level=RiskLevel.LOW,
             confidence=0.9,

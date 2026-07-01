@@ -44,8 +44,8 @@ def _to_plan_response(
         plan_id=plan.plan_id,
         goal=plan.user_goal,
         status=status,
+        task_label=plan.task_label,
         goal_analysis=GoalAnalysisResponse(
-            task_type=a.task_type.value,
             required_capabilities=a.required_capabilities,
             risk_level=a.risk_level.value,
             confidence=a.confidence,

@@ -98,7 +98,7 @@ def _generate_explanation(
     agents_summary = ", ".join(selected_agents) or "none"
     pattern_label = selected_pattern or "none"
     return (
-        f"Goal classified as '{analysis.task_type.value}' with "
+        f"Capability-based plan requiring {len(analysis.required_capabilities)} capabilities, "
         f"{analysis.confidence:.0%} confidence. "
         f"Selected pattern: {pattern_label}. "
         f"Agents: {agents_summary}. "
@@ -128,9 +128,10 @@ class PlanBuilder:
         """Build a GeneratedWorkflowPlan from a user goal and GoalAnalysis.
 
         All selections are deterministic — no I/O, no LLM.
+        Agents are selected first; pattern selection consults agent capabilities.
         """
-        selected_pattern = self._pattern_selector.select(analysis, self._registry)
         selected_agents = self._agent_selector.select(analysis, self._registry)
+        selected_pattern = self._pattern_selector.select(analysis, selected_agents, self._registry)
         selected_tools = self._tool_selector.select(analysis, selected_agents, self._registry)
 
         guardrails = _generate_guardrails(analysis)

@@ -9,7 +9,6 @@ from platform.planner.models import (
     GoalAnalysis,
     GuardrailConfig,
     RiskLevel,
-    TaskType,
     ValidationError,
     ValidationResult,
     ValidationWarning,
@@ -23,8 +22,8 @@ def plan_to_json(plan: GeneratedWorkflowPlan) -> str:
         "plan_id": plan.plan_id,
         "user_goal": plan.user_goal,
         "goal_analysis": {
-            "task_type": analysis.task_type.value,
             "required_capabilities": analysis.required_capabilities,
+            "missing_capabilities": analysis.missing_capabilities,
             "risk_level": analysis.risk_level.value,
             "confidence": analysis.confidence,
             "reasoning": analysis.reasoning,
@@ -43,22 +42,27 @@ def plan_to_json(plan: GeneratedWorkflowPlan) -> str:
         "explanation": plan.explanation,
         "estimated_complexity": plan.estimated_complexity,
         "estimated_duration_seconds": plan.estimated_duration_seconds,
+        "task_label": plan.task_label,
     }
     return json.dumps(d)
 
 
 def plan_from_json(json_str: str) -> GeneratedWorkflowPlan:
-    """Deserialize GeneratedWorkflowPlan from a JSON string."""
+    """Deserialize GeneratedWorkflowPlan from a JSON string.
+
+    Backward compatible: rows written before V3.2 (missing task_label or
+    missing_capabilities keys) deserialize with safe defaults.
+    """
     d = json.loads(json_str)
     a = d["goal_analysis"]
     analysis = GoalAnalysis(
-        task_type=TaskType(a["task_type"]),
         required_capabilities=a["required_capabilities"],
         risk_level=RiskLevel(a["risk_level"]),
         confidence=a["confidence"],
         reasoning=a["reasoning"],
         constraints=a["constraints"],
         requires_hitl=a["requires_hitl"],
+        missing_capabilities=a.get("missing_capabilities", []),
     )
     guardrails = [
         GuardrailConfig(
@@ -81,6 +85,7 @@ def plan_from_json(json_str: str) -> GeneratedWorkflowPlan:
         explanation=d["explanation"],
         estimated_complexity=d["estimated_complexity"],
         estimated_duration_seconds=d["estimated_duration_seconds"],
+        task_label=d.get("task_label", ""),
     )
 
 

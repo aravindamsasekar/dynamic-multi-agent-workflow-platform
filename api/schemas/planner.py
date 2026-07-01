@@ -13,7 +13,6 @@ class GeneratePlanRequest(BaseModel):
 
 
 class GoalAnalysisResponse(BaseModel):
-    task_type: str
     required_capabilities: list[str]
     risk_level: str
     confidence: float
@@ -48,6 +47,7 @@ class GeneratePlanResponse(BaseModel):
     plan_id: str
     goal: str
     status: str
+    task_label: str
     goal_analysis: GoalAnalysisResponse
     selected_pattern: str
     selected_agents: list[str]

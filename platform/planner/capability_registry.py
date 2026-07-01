@@ -18,7 +18,7 @@ class CapabilityRegistry:
     """Holds descriptors for all agents, tools, and patterns the planner can use.
 
     Loaded once at startup from static data. Used as lookup tables by the
-    selectors (Phase C) and as prompt context for the Goal Analyzer (Phase B).
+    selectors and as prompt context for the GoalAnalyzer.
     """
 
     def __init__(self) -> None:
@@ -74,12 +74,27 @@ class CapabilityRegistry:
     def find_tools_by_capability(self, capability: str) -> list[ToolCapabilityDescriptor]:
         return [d for d in self._tools.values() if capability in d.capabilities]
 
-    # ------------------------------------------------------------------
-    # Task type queries
-    # ------------------------------------------------------------------
+    def all_agent_capabilities(self) -> list[str]:
+        """Return a deduplicated ordered list of every capability tag across all agents."""
+        seen: set[str] = set()
+        result: list[str] = []
+        for descriptor in self._agents.values():
+            for cap in descriptor.capabilities:
+                if cap not in seen:
+                    seen.add(cap)
+                    result.append(cap)
+        return result
 
-    def find_agents_by_task_type(self, task_type: str) -> list[AgentCapabilityDescriptor]:
-        return [d for d in self._agents.values() if task_type in d.supported_task_types]
+    def all_produced_tokens(self) -> set[str]:
+        """Return the set of all data tokens produced by any registered agent."""
+        tokens: set[str] = set()
+        for descriptor in self._agents.values():
+            tokens.update(descriptor.produces)
+        return tokens
+
+    # ------------------------------------------------------------------
+    # Pattern task-type queries (PatternCapabilityDescriptor still uses supported_task_types)
+    # ------------------------------------------------------------------
 
     def find_patterns_for_task_type(self, task_type: str) -> list[PatternCapabilityDescriptor]:
         return [d for d in self._patterns.values() if task_type in d.supported_task_types]
@@ -101,7 +116,7 @@ class CapabilityRegistry:
         lines.append("=== Registered Agents ===")
         for d in self._agents.values():
             caps = ", ".join(d.capabilities)
-            lines.append(f"  {d.agent_id} [{', '.join(d.supported_task_types)}]: {caps}")
+            lines.append(f"  {d.agent_id}: {caps}")
 
         lines.append("=== Registered Tools ===")
         for d in self._tools.values():
@@ -121,7 +136,7 @@ class CapabilityRegistry:
 
     @classmethod
     def build_pr_review_registry(cls) -> "CapabilityRegistry":
-        """Returns a registry pre-loaded with all V3.1 PR review capabilities."""
+        """Returns a registry pre-loaded with all V3 PR review capabilities."""
         registry = cls()
 
         # Agents
@@ -130,10 +145,10 @@ class CapabilityRegistry:
             name="PR Data Agent",
             description="Fetches all GitHub data needed to review a pull request.",
             capabilities=["fetch_pr_data", "fetch_github_diff", "fetch_changed_files"],
-            supported_task_types=["code_review"],
             input_description="owner, repo, pull_number",
             output_description="PR metadata, changed files list, unified diff",
             required_tool_capabilities=["read_github_pr", "read_github_files", "read_github_diff"],
+            produces=["pr_metadata", "pr_diff", "changed_files"],
         ))
 
         registry.register_agent(AgentCapabilityDescriptor(
@@ -141,10 +156,11 @@ class CapabilityRegistry:
             name="Code Review Specialist",
             description="Reviews code quality, architecture, and maintainability.",
             capabilities=["review_code_quality", "assess_architecture", "check_standards"],
-            supported_task_types=["code_review"],
             input_description="PR description and diff",
             output_description="Code quality, architecture, and standards review",
             required_tool_capabilities=["read_github_diff", "search_knowledge"],
+            consumes=["pr_diff"],
+            produces=["code_quality_report"],
         ))
 
         registry.register_agent(AgentCapabilityDescriptor(
@@ -152,10 +168,11 @@ class CapabilityRegistry:
             name="Risk Assessment Specialist",
             description="Assesses security, testing, reliability, and performance risks.",
             capabilities=["assess_security", "assess_testing", "assess_reliability"],
-            supported_task_types=["code_review"],
             input_description="PR description and diff",
             output_description="Risk assessment across security, testing, reliability, performance",
             required_tool_capabilities=["read_github_diff", "search_knowledge"],
+            consumes=["pr_diff"],
+            produces=["risk_assessment_report"],
         ))
 
         registry.register_agent(AgentCapabilityDescriptor(
@@ -163,10 +180,11 @@ class CapabilityRegistry:
             name="Synthesis Agent",
             description="Synthesizes specialist findings into a final PR review report.",
             capabilities=["synthesize_findings", "produce_final_report"],
-            supported_task_types=["code_review"],
             input_description="Outputs from pr_data_agent, review_specialist, risk_specialist",
             output_description="Structured final PR review with verdict",
             required_tool_capabilities=["search_knowledge", "read_pr_comments"],
+            consumes=["code_quality_report", "risk_assessment_report"],
+            produces=["final_review_report"],
         ))
 
         # Tools
@@ -233,6 +251,7 @@ class CapabilityRegistry:
             supports_iteration=False,
             min_agents=2,
             max_agents=5,
+            trigger_capabilities=[],
         ))
 
         registry.register_pattern(PatternCapabilityDescriptor(
@@ -245,6 +264,7 @@ class CapabilityRegistry:
             supports_iteration=False,
             min_agents=2,
             max_agents=10,
+            trigger_capabilities=["classify_intent"],
         ))
 
         registry.register_pattern(PatternCapabilityDescriptor(
@@ -259,6 +279,7 @@ class CapabilityRegistry:
             supports_iteration=True,
             min_agents=3,
             max_agents=3,
+            trigger_capabilities=["iterative_research"],
         ))
 
         return registry

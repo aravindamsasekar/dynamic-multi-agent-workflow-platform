@@ -7,7 +7,6 @@ from platform.planner.models import (
     GeneratedWorkflowPlan,
     OperationType,
     RiskLevel,
-    TaskType,
     ValidationError,
     ValidationResult,
     ValidationWarning,
@@ -34,21 +33,37 @@ class PlanValidator:
         warnings: list[ValidationWarning] = []
 
         # ------------------------------------------------------------------
-        # 1. Task type
+        # 1. Required capabilities — gate everything else
         # ------------------------------------------------------------------
-        if plan.goal_analysis.task_type == TaskType.UNSUPPORTED:
+        if not plan.goal_analysis.required_capabilities:
             errors.append(ValidationError(
-                code="UNSUPPORTED_TASK_TYPE",
+                code="NO_REQUIRED_CAPABILITIES",
                 message=(
-                    f"Goal type '{plan.goal_analysis.task_type.value}' is not supported "
-                    "in V3.1. Only 'code_review' is supported."
+                    "No required capabilities were identified for this goal. "
+                    "The goal may be unsupported or the planner did not recognise "
+                    "any applicable capabilities. Clarify the goal and retry."
                 ),
             ))
-            # Short-circuit: remaining checks are meaningless for unsupported goals.
             return ValidationResult(is_valid=False, errors=errors, warnings=warnings)
 
         # ------------------------------------------------------------------
-        # 2. Confidence
+        # 2. Missing capabilities (hallucination filter output)
+        # ------------------------------------------------------------------
+        if plan.goal_analysis.missing_capabilities:
+            missing = ", ".join(
+                repr(c) for c in plan.goal_analysis.missing_capabilities
+            )
+            errors.append(ValidationError(
+                code="MISSING_CAPABILITIES",
+                message=(
+                    f"The following capabilities were requested but are not registered "
+                    f"in the capability registry: {missing}. "
+                    "Remove or replace them and regenerate the plan."
+                ),
+            ))
+
+        # ------------------------------------------------------------------
+        # 3. Confidence
         # ------------------------------------------------------------------
         conf = plan.goal_analysis.confidence
         if conf < _ERROR_CONFIDENCE:
@@ -69,7 +84,7 @@ class PlanValidator:
             ))
 
         # ------------------------------------------------------------------
-        # 3. Pattern
+        # 4. Pattern
         # ------------------------------------------------------------------
         if not plan.selected_pattern:
             errors.append(ValidationError(
@@ -86,7 +101,7 @@ class PlanValidator:
             ))
 
         # ------------------------------------------------------------------
-        # 4. Agents
+        # 5. Agents
         # ------------------------------------------------------------------
         if not plan.selected_agents:
             errors.append(ValidationError(
@@ -105,7 +120,7 @@ class PlanValidator:
                     ))
 
         # ------------------------------------------------------------------
-        # 5. Tools
+        # 6. Tools
         # ------------------------------------------------------------------
         if not plan.selected_tools:
             errors.append(ValidationError(
@@ -136,7 +151,40 @@ class PlanValidator:
                     ))
 
         # ------------------------------------------------------------------
-        # 6. Capability coverage
+        # 7. Dataflow — agent contract satisfaction
+        #
+        # For each selected agent, every token it consumes that is produced by
+        # *some* registered agent must also be produced by a *selected* agent.
+        # Tokens not produced by any registered agent are user-provided inputs
+        # and are skipped.
+        # ------------------------------------------------------------------
+        all_produced = registry.all_produced_tokens()
+        selected_produces: set[str] = set()
+        for agent_id in plan.selected_agents:
+            desc = registry.get_agent(agent_id)
+            if desc is not None:
+                selected_produces.update(desc.produces)
+
+        unsatisfied: set[str] = set()
+        for agent_id in plan.selected_agents:
+            desc = registry.get_agent(agent_id)
+            if desc is None:
+                continue
+            for token in desc.consumes:
+                if token in all_produced and token not in selected_produces:
+                    unsatisfied.add(token)
+
+        for token in sorted(unsatisfied):
+            errors.append(ValidationError(
+                code="DATAFLOW_UNSATISFIED",
+                message=(
+                    f"Token {token!r} is required by the dataflow but is not "
+                    "produced by any selected agent."
+                ),
+            ))
+
+        # ------------------------------------------------------------------
+        # 8. Capability coverage
         # ------------------------------------------------------------------
         selected_set = set(plan.selected_agents)
         for cap in plan.goal_analysis.required_capabilities:
@@ -150,7 +198,7 @@ class PlanValidator:
                 ))
 
         # ------------------------------------------------------------------
-        # 7. HITL recommendations
+        # 9. HITL recommendations
         # ------------------------------------------------------------------
         if plan.goal_analysis.risk_level in _HIGH_RISK_LEVELS and not plan.hitl_required:
             warnings.append(ValidationWarning(

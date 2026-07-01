@@ -1,4 +1,4 @@
-"""GoalAnalyzer — the single LLM planning step in V3.1."""
+"""GoalAnalyzer — the single LLM planning step in V3.2."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from platform.planner.models import (
     GoalAnalysis,
     PlannerError,
     RiskLevel,
-    TaskType,
 )
 
 # ---------------------------------------------------------------------------
@@ -26,20 +25,25 @@ You are a workflow planning assistant for a multi-agent platform.
 Analyze the user's goal and return a single JSON object. No explanation, no markdown, \
 no text outside the JSON.
 
-## Supported goal types (V3.1)
+## Your task
 
-Only one goal type is currently supported:
-- code_review: Reviewing a GitHub pull request for code quality, architecture, \
-security, and testing.
+Read the user goal and identify ONLY which capabilities (from the allow-list below) are \
+needed to complete it. Do not classify the goal type. Do not choose patterns, agents, or \
+tools. Do not invent capability names.
 
-## Available capabilities
+## Capability allow-list
+
+The ONLY valid capability names you may use in required_capabilities:
+
+{capability_list}
+
+## Available registry summary
 
 {registry_summary}
 
 ## JSON schema
 
 {{
-  "task_type": "code_review" or "unsupported",
   "required_capabilities": ["capability_name", ...],
   "risk_level": "low" or "medium" or "high" or "critical",
   "confidence": <float 0.0 to 1.0>,
@@ -48,14 +52,15 @@ security, and testing.
   "requires_hitl": true or false
 }}
 
-## Classification rules
+## Rules
 
-- Set task_type = "code_review" for goals that review, analyze, or assess a GitHub pull request.
-- Set task_type = "unsupported" and confidence = 0 for all other goals.
-- required_capabilities must only contain capability names listed in "Available capabilities" above. \
-Leave empty for unsupported goals.
+- required_capabilities must ONLY contain names from the capability allow-list above. \
+Never invent capability names.
+- Return required_capabilities = [] when no listed capabilities match the goal.
+- Set confidence = 0.0 when no capabilities match.
 - PR reviews are read-only by default: risk_level = "low", constraints = ["read_only"].
-- Set risk_level = "high" if the goal mentions production, sensitive data, or financial systems.
+- Set risk_level = "high" if the goal mentions production, sensitive data, or \
+financial systems.
 - Set requires_hitl = true when risk_level is "high" or "critical".
 - Set requires_hitl = true if the goal contains any of: \
 deploy, delete, send, post, notify, refund, production.
@@ -68,7 +73,6 @@ Return ONLY the JSON object.\
 # ---------------------------------------------------------------------------
 
 _REQUIRED_FIELDS: frozenset[str] = frozenset({
-    "task_type",
     "required_capabilities",
     "risk_level",
     "confidence",
@@ -96,7 +100,7 @@ def _strip_code_fences(text: str) -> str:
     return text.strip()
 
 
-def _parse_goal_analysis(raw: str) -> GoalAnalysis:
+def _parse_goal_analysis(raw: str, allowed_capabilities: frozenset[str]) -> GoalAnalysis:
     """Parse LLM text into a GoalAnalysis. Raises PlannerError on any failure."""
     text = _strip_code_fences(raw)
 
@@ -110,11 +114,6 @@ def _parse_goal_analysis(raw: str) -> GoalAnalysis:
         raise PlannerError(
             f"LLM response missing required fields: {sorted(missing)}"
         )
-
-    try:
-        task_type = TaskType(data["task_type"])
-    except ValueError as exc:
-        raise PlannerError(f"Invalid task_type: {data['task_type']!r}") from exc
 
     try:
         risk_level = RiskLevel(data["risk_level"])
@@ -132,14 +131,26 @@ def _parse_goal_analysis(raw: str) -> GoalAnalysis:
             f"confidence must be between 0.0 and 1.0, got {confidence}"
         )
 
+    # Deduplicate preserving order
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for cap in data["required_capabilities"]:
+        if cap not in seen:
+            seen.add(cap)
+            deduped.append(cap)
+
+    # Anti-hallucination filter: unknown caps → missing_capabilities
+    valid_caps = [cap for cap in deduped if cap in allowed_capabilities]
+    missing_caps = [cap for cap in deduped if cap not in allowed_capabilities]
+
     return GoalAnalysis(
-        task_type=task_type,
-        required_capabilities=list(data["required_capabilities"]),
+        required_capabilities=valid_caps,
         risk_level=risk_level,
         confidence=confidence,
         reasoning=str(data["reasoning"]),
         constraints=list(data["constraints"]),
         requires_hitl=bool(data["requires_hitl"]),
+        missing_capabilities=missing_caps,
     )
 
 
@@ -156,7 +167,8 @@ class GoalAnalyzer:
 
     Args:
         llm:      Any ILLMProvider. Tests inject MockLLMProvider.
-        registry: CapabilityRegistry whose summary is injected into the prompt.
+        registry: CapabilityRegistry whose summary and capability allow-list
+                  are injected into the system prompt.
     """
 
     def __init__(self, llm: ILLMProvider, registry: CapabilityRegistry) -> None:
@@ -164,8 +176,11 @@ class GoalAnalyzer:
         self._registry = registry
 
     def _build_system_prompt(self) -> str:
+        allowed = sorted(self._registry.all_agent_capabilities())
+        capability_list = "\n".join(f"- {cap}" for cap in allowed)
         return _SYSTEM_PROMPT_TEMPLATE.format(
-            registry_summary=self._registry.to_prompt_summary()
+            capability_list=capability_list,
+            registry_summary=self._registry.to_prompt_summary(),
         )
 
     async def analyze(self, goal: str) -> GoalAnalysis:
@@ -184,4 +199,5 @@ class GoalAnalyzer:
         if not raw_text:
             raise PlannerError("LLM returned no text content")
 
-        return _parse_goal_analysis(raw_text)
+        allowed = frozenset(self._registry.all_agent_capabilities())
+        return _parse_goal_analysis(raw_text, allowed)

@@ -1,22 +1,28 @@
-"""AgentSelector — deterministic agent selection from CapabilityRegistry."""
+"""AgentSelector — deterministic, capability-first agent selection."""
 
 from __future__ import annotations
 
 from platform.planner.capability_registry import CapabilityRegistry
-from platform.planner.models import GoalAnalysis, TaskType
+from platform.planner.models import GoalAnalysis
 
 
 class AgentSelector:
     """Selects agent IDs from the registry based on GoalAnalysis.
 
-    V3.1: returns all agents whose supported_task_types include the goal's
-    task_type. No agent generation; every returned ID maps to an existing
-    registered agent.
+    V3.2: capability-first. For each required capability, finds all agents
+    that cover it. Returns a deduplicated list preserving first-encounter order
+    so agent ordering is stable and deterministic.
     """
 
     def select(self, analysis: GoalAnalysis, registry: CapabilityRegistry) -> list[str]:
-        """Return ordered list of agent IDs to include in the generated plan."""
-        if analysis.task_type == TaskType.UNSUPPORTED:
+        """Return an ordered list of agent IDs to include in the generated plan."""
+        if not analysis.required_capabilities:
             return []
-        agents = registry.find_agents_by_task_type(analysis.task_type.value)
-        return [a.agent_id for a in agents]
+        seen: set[str] = set()
+        result: list[str] = []
+        for cap in analysis.required_capabilities:
+            for agent in registry.find_agents_by_capability(cap):
+                if agent.agent_id not in seen:
+                    seen.add(agent.agent_id)
+                    result.append(agent.agent_id)
+        return result

@@ -21,14 +21,12 @@ from platform.planner.models import (
 def _agent(
     agent_id: str = "test_agent",
     capabilities: list[str] | None = None,
-    task_types: list[str] | None = None,
 ) -> AgentCapabilityDescriptor:
     return AgentCapabilityDescriptor(
         agent_id=agent_id,
         name=agent_id.replace("_", " ").title(),
         description="A test agent.",
         capabilities=capabilities or ["do_thing"],
-        supported_task_types=task_types or ["code_review"],
     )
 
 
@@ -67,10 +65,9 @@ def _pattern(
 
 class TestAgentCapabilityDescriptor:
     def test_required_fields(self):
-        d = _agent("my_agent", ["cap_a", "cap_b"], ["code_review"])
+        d = _agent("my_agent", ["cap_a", "cap_b"])
         assert d.agent_id == "my_agent"
         assert d.capabilities == ["cap_a", "cap_b"]
-        assert d.supported_task_types == ["code_review"]
 
     def test_optional_fields_default_to_empty(self):
         d = AgentCapabilityDescriptor(
@@ -78,21 +75,48 @@ class TestAgentCapabilityDescriptor:
             name="A",
             description="desc",
             capabilities=["c"],
-            supported_task_types=["t"],
         )
         assert d.input_description == ""
         assert d.output_description == ""
         assert d.required_tool_capabilities == []
+        assert d.consumes == []
+        assert d.produces == []
 
     def test_required_tool_capabilities_are_independent_between_instances(self):
         d1 = AgentCapabilityDescriptor(
-            agent_id="a1", name="A1", description="", capabilities=[], supported_task_types=[]
+            agent_id="a1", name="A1", description="", capabilities=[]
         )
         d2 = AgentCapabilityDescriptor(
-            agent_id="a2", name="A2", description="", capabilities=[], supported_task_types=[]
+            agent_id="a2", name="A2", description="", capabilities=[]
         )
         d1.required_tool_capabilities.append("tool_x")
         assert d2.required_tool_capabilities == []
+
+    def test_consumes_is_independent_between_instances(self):
+        d1 = AgentCapabilityDescriptor(agent_id="a1", name="A1", description="", capabilities=[])
+        d2 = AgentCapabilityDescriptor(agent_id="a2", name="A2", description="", capabilities=[])
+        d1.consumes.append("token_x")
+        assert d2.consumes == []
+
+    def test_produces_is_independent_between_instances(self):
+        d1 = AgentCapabilityDescriptor(agent_id="a1", name="A1", description="", capabilities=[])
+        d2 = AgentCapabilityDescriptor(agent_id="a2", name="A2", description="", capabilities=[])
+        d1.produces.append("token_y")
+        assert d2.produces == []
+
+    def test_consumes_can_be_set_explicitly(self):
+        d = AgentCapabilityDescriptor(
+            agent_id="a", name="A", description="", capabilities=[],
+            consumes=["token_in"],
+        )
+        assert d.consumes == ["token_in"]
+
+    def test_produces_can_be_set_explicitly(self):
+        d = AgentCapabilityDescriptor(
+            agent_id="a", name="A", description="", capabilities=[],
+            produces=["token_out"],
+        )
+        assert d.produces == ["token_out"]
 
 
 class TestToolCapabilityDescriptor:
@@ -133,6 +157,21 @@ class TestPatternCapabilityDescriptor:
     def test_iteration_defaults_to_false(self):
         d = _pattern()
         assert d.supports_iteration is False
+
+    def test_trigger_capabilities_defaults_to_empty(self):
+        d = _pattern()
+        assert d.trigger_capabilities == []
+
+    def test_trigger_capabilities_can_be_set_explicitly(self):
+        d = PatternCapabilityDescriptor(
+            pattern="router",
+            name="Router",
+            description="",
+            best_for=[],
+            supported_task_types=["support"],
+            trigger_capabilities=["classify_intent"],
+        )
+        assert d.trigger_capabilities == ["classify_intent"]
 
     def test_agent_count_bounds(self):
         d = PatternCapabilityDescriptor(
@@ -239,19 +278,43 @@ class TestCapabilityTagQueries:
         registry.register_tool(_tool("t1", capabilities=["read_thing"]))
         assert registry.find_tools_by_capability("phantom") == []
 
-    def test_find_agents_by_task_type(self):
+    def test_all_agent_capabilities_returns_all_unique_caps(self):
         registry = CapabilityRegistry()
-        registry.register_agent(_agent("cr_agent", task_types=["code_review"]))
-        registry.register_agent(_agent("support_agent", task_types=["support"]))
+        registry.register_agent(_agent("a1", capabilities=["fetch_data", "summarize"]))
+        registry.register_agent(_agent("a2", capabilities=["summarize", "classify"]))
+        caps = registry.all_agent_capabilities()
+        assert set(caps) == {"fetch_data", "summarize", "classify"}
 
-        results = registry.find_agents_by_task_type("code_review")
-        assert len(results) == 1
-        assert results[0].agent_id == "cr_agent"
-
-    def test_find_agents_by_task_type_empty_for_unknown(self):
+    def test_all_agent_capabilities_deduplicates(self):
         registry = CapabilityRegistry()
-        registry.register_agent(_agent("a", task_types=["code_review"]))
-        assert registry.find_agents_by_task_type("unknown_type") == []
+        registry.register_agent(_agent("a1", capabilities=["shared_cap", "unique_a"]))
+        registry.register_agent(_agent("a2", capabilities=["shared_cap", "unique_b"]))
+        caps = registry.all_agent_capabilities()
+        assert caps.count("shared_cap") == 1
+
+    def test_all_agent_capabilities_empty_registry(self):
+        assert CapabilityRegistry().all_agent_capabilities() == []
+
+    def test_all_produced_tokens_returns_union(self):
+        registry = CapabilityRegistry()
+        registry.register_agent(AgentCapabilityDescriptor(
+            agent_id="a1", name="A1", description="", capabilities=["cap_a"],
+            produces=["token_x", "token_y"],
+        ))
+        registry.register_agent(AgentCapabilityDescriptor(
+            agent_id="a2", name="A2", description="", capabilities=["cap_b"],
+            produces=["token_y", "token_z"],
+        ))
+        tokens = registry.all_produced_tokens()
+        assert tokens == {"token_x", "token_y", "token_z"}
+
+    def test_all_produced_tokens_empty_when_no_contracts(self):
+        registry = CapabilityRegistry()
+        registry.register_agent(_agent("a1"))
+        assert registry.all_produced_tokens() == set()
+
+    def test_all_produced_tokens_empty_registry(self):
+        assert CapabilityRegistry().all_produced_tokens() == set()
 
 
 # ---------------------------------------------------------------------------
@@ -302,8 +365,12 @@ class TestPRReviewRegistry:
             assert registry.get_agent(agent_id) is not None, f"Missing agent: {agent_id}"
 
     def test_exactly_four_pr_review_agents(self, registry: CapabilityRegistry):
-        agents = registry.find_agents_by_task_type("code_review")
-        assert len(agents) == 4
+        # Count distinct agents reachable via all_agent_capabilities
+        agent_ids: set[str] = set()
+        for cap in registry.all_agent_capabilities():
+            for agent in registry.find_agents_by_capability(cap):
+                agent_ids.add(agent.agent_id)
+        assert len(agent_ids) == 4
 
     def test_all_five_pr_review_tools_present(self, registry: CapabilityRegistry):
         expected = {
@@ -326,6 +393,21 @@ class TestPRReviewRegistry:
         assert pattern is not None
         assert pattern.requires_reviewer is True
 
+    def test_parallel_specialist_has_empty_trigger_capabilities(self, registry: CapabilityRegistry):
+        pattern = registry.get_pattern("parallel_specialist")
+        assert pattern is not None
+        assert pattern.trigger_capabilities == []
+
+    def test_router_has_trigger_capabilities(self, registry: CapabilityRegistry):
+        pattern = registry.get_pattern("router")
+        assert pattern is not None
+        assert len(pattern.trigger_capabilities) > 0
+
+    def test_peo_has_trigger_capabilities(self, registry: CapabilityRegistry):
+        pattern = registry.get_pattern("planner_executor_observer")
+        assert pattern is not None
+        assert len(pattern.trigger_capabilities) > 0
+
     def test_pr_data_agent_capabilities(self, registry: CapabilityRegistry):
         agent = registry.get_agent("pr_data_agent")
         assert agent is not None
@@ -337,6 +419,49 @@ class TestPRReviewRegistry:
         agent = registry.get_agent("synthesis_agent")
         assert agent is not None
         assert "synthesize_findings" in agent.capabilities
+
+    def test_pr_data_agent_produces_tokens(self, registry: CapabilityRegistry):
+        agent = registry.get_agent("pr_data_agent")
+        assert agent is not None
+        assert "pr_diff" in agent.produces
+        assert "pr_metadata" in agent.produces
+
+    def test_review_specialist_consumes_pr_diff(self, registry: CapabilityRegistry):
+        agent = registry.get_agent("review_specialist")
+        assert agent is not None
+        assert "pr_diff" in agent.consumes
+
+    def test_review_specialist_produces_code_quality_report(self, registry: CapabilityRegistry):
+        agent = registry.get_agent("review_specialist")
+        assert agent is not None
+        assert "code_quality_report" in agent.produces
+
+    def test_risk_specialist_consumes_pr_diff(self, registry: CapabilityRegistry):
+        agent = registry.get_agent("risk_specialist")
+        assert agent is not None
+        assert "pr_diff" in agent.consumes
+
+    def test_risk_specialist_produces_risk_assessment_report(self, registry: CapabilityRegistry):
+        agent = registry.get_agent("risk_specialist")
+        assert agent is not None
+        assert "risk_assessment_report" in agent.produces
+
+    def test_synthesis_agent_consumes_specialist_reports(self, registry: CapabilityRegistry):
+        agent = registry.get_agent("synthesis_agent")
+        assert agent is not None
+        assert "code_quality_report" in agent.consumes
+        assert "risk_assessment_report" in agent.consumes
+
+    def test_synthesis_agent_produces_final_review_report(self, registry: CapabilityRegistry):
+        agent = registry.get_agent("synthesis_agent")
+        assert agent is not None
+        assert "final_review_report" in agent.produces
+
+    def test_all_produced_tokens_includes_pr_review_tokens(self, registry: CapabilityRegistry):
+        tokens = registry.all_produced_tokens()
+        expected = {"pr_metadata", "pr_diff", "changed_files",
+                    "code_quality_report", "risk_assessment_report", "final_review_report"}
+        assert expected.issubset(tokens)
 
     def test_mcp_tool_has_mcp_flag(self, registry: CapabilityRegistry):
         tool = registry.get_tool("mcp_get_pr_comments")
@@ -382,6 +507,16 @@ class TestPRReviewRegistry:
     def test_peo_supports_research_task_type(self, registry: CapabilityRegistry):
         patterns = registry.find_patterns_for_task_type("research")
         assert any(p.pattern == "planner_executor_observer" for p in patterns)
+
+    def test_all_agent_capabilities_covers_all_pr_review_caps(self, registry: CapabilityRegistry):
+        caps = set(registry.all_agent_capabilities())
+        expected = {
+            "fetch_pr_data", "fetch_github_diff", "fetch_changed_files",
+            "review_code_quality", "assess_architecture", "check_standards",
+            "assess_security", "assess_testing", "assess_reliability",
+            "synthesize_findings", "produce_final_report",
+        }
+        assert expected.issubset(caps)
 
 
 # ---------------------------------------------------------------------------

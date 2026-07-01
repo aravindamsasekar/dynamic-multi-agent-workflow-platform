@@ -29,7 +29,6 @@ from platform.planner.models import (
     GoalAnalysis,
     GuardrailConfig,
     RiskLevel,
-    TaskType,
     ValidationError,
     ValidationResult,
     ValidationWarning,
@@ -47,7 +46,6 @@ def _make_plan(plan_id: str = _PLAN_ID) -> GeneratedWorkflowPlan:
         plan_id=plan_id,
         user_goal="Review PR #42",
         goal_analysis=GoalAnalysis(
-            task_type=TaskType.CODE_REVIEW,
             required_capabilities=["fetch_pr_data", "synthesize_findings"],
             risk_level=RiskLevel.LOW,
             confidence=0.9,
@@ -220,8 +218,13 @@ class TestGeneratePlan:
         response = await empty_client.post("/planner/generate", json={"goal": "Review PR"})
         data = response.json()
         ga = data["goal_analysis"]
-        assert ga["task_type"] == "code_review"
+        assert "task_type" not in ga
         assert ga["risk_level"] == "low"
+
+    async def test_response_includes_task_label(self, empty_client: AsyncClient):
+        response = await empty_client.post("/planner/generate", json={"goal": "Review PR"})
+        data = response.json()
+        assert "task_label" in data
 
     async def test_response_includes_explanation(self, empty_client: AsyncClient):
         response = await empty_client.post("/planner/generate", json={"goal": "Review PR"})

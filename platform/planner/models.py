@@ -11,11 +11,6 @@ from enum import Enum
 # ---------------------------------------------------------------------------
 
 
-class TaskType(str, Enum):
-    CODE_REVIEW = "code_review"
-    UNSUPPORTED = "unsupported"  # V3.2+: incident_triage, research, data_analysis
-
-
 class RiskLevel(str, Enum):
     LOW      = "low"
     MEDIUM   = "medium"
@@ -36,7 +31,7 @@ class PlannerError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Goal analysis (output of GoalAnalyzer — only LLM step in V3.1)
+# Goal analysis (output of GoalAnalyzer — only LLM step)
 # ---------------------------------------------------------------------------
 
 
@@ -47,15 +42,19 @@ class GoalAnalysis:
     Produced by GoalAnalyzer via a single LLM call. All downstream planner
     steps (agent selection, tool selection, pattern selection) are deterministic
     and consume this struct as input.
+
+    missing_capabilities: capabilities the LLM requested that have no agent
+    in the registry (anti-hallucination filter output). Populated by the
+    GoalAnalyzer; empty until Phase C.
     """
 
-    task_type: TaskType
-    required_capabilities: list[str]   # capability tags from CapabilityRegistry
+    required_capabilities: list[str]
     risk_level: RiskLevel
-    confidence: float                  # 0.0–1.0
-    reasoning: str                     # one-sentence explanation of the classification
-    constraints: list[str]             # e.g. ["read_only", "no_external_writes"]
+    confidence: float
+    reasoning: str
+    constraints: list[str]
     requires_hitl: bool
+    missing_capabilities: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -110,18 +109,19 @@ class GeneratedWorkflowPlan:
     is triggered separately after user approval (Phase E).
     """
 
-    plan_id: str                           # UUID
-    user_goal: str                         # original natural-language goal
-    goal_analysis: GoalAnalysis            # structured intent from GoalAnalyzer
-    selected_pattern: str                  # "parallel_specialist" | "" for unsupported
-    selected_agents: list[str]             # agent_ids from CapabilityRegistry
-    selected_tools: list[str]              # tool_names from CapabilityRegistry
-    guardrails: list[GuardrailConfig]      # serialisable rule configs
-    hitl_required: bool                    # from analysis.requires_hitl
-    warnings: list[str]                    # builder-side informational notes
-    explanation: str                       # human-readable plan summary
-    estimated_complexity: str             # "low" | "medium" | "high" — derived from agent/tool count
-    estimated_duration_seconds: int       # rough wall-clock estimate
+    plan_id: str
+    user_goal: str
+    goal_analysis: GoalAnalysis
+    selected_pattern: str
+    selected_agents: list[str]
+    selected_tools: list[str]
+    guardrails: list[GuardrailConfig]
+    hitl_required: bool
+    warnings: list[str]
+    explanation: str
+    estimated_complexity: str
+    estimated_duration_seconds: int
+    task_label: str = ""
 
 
 class OperationType(str, Enum):
@@ -133,16 +133,22 @@ class OperationType(str, Enum):
 
 @dataclass
 class AgentCapabilityDescriptor:
-    """Describes what an existing registered agent can do."""
+    """Describes what an existing registered agent can do.
+
+    consumes: data tokens this agent needs as input from other agents.
+    produces: data tokens this agent outputs for downstream agents to consume.
+    Both default to [] for agents without defined contracts.
+    """
 
     agent_id: str
     name: str
     description: str
-    capabilities: list[str]             # e.g. ["fetch_pr_data", "fetch_github_diff"]
-    supported_task_types: list[str]     # e.g. ["code_review"]
+    capabilities: list[str]
     input_description: str = ""
     output_description: str = ""
     required_tool_capabilities: list[str] = field(default_factory=list)
+    consumes: list[str] = field(default_factory=list)
+    produces: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -163,14 +169,20 @@ class ToolCapabilityDescriptor:
 
 @dataclass
 class PatternCapabilityDescriptor:
-    """Describes an execution pattern and when it should be used."""
+    """Describes an execution pattern and when it should be used.
 
-    pattern: str                        # matches PatternType enum value string
+    trigger_capabilities: agent capability tags that indicate this pattern should
+    be selected. PatternSelector checks these in priority order; a pattern with
+    an empty list matches last as the universal default.
+    """
+
+    pattern: str
     name: str
     description: str
-    best_for: list[str]                 # use-case tags e.g. ["multi_dimension_analysis"]
-    supported_task_types: list[str]     # task types this pattern handles
+    best_for: list[str]
+    supported_task_types: list[str]
     requires_reviewer: bool = False
     supports_iteration: bool = False
     min_agents: int = 1
     max_agents: int = 10
+    trigger_capabilities: list[str] = field(default_factory=list)

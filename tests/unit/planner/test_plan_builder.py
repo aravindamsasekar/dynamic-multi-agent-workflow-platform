@@ -9,7 +9,6 @@ from platform.planner.models import (
     GeneratedWorkflowPlan,
     GoalAnalysis,
     RiskLevel,
-    TaskType,
 )
 from platform.planner.plan_builder import PlanBuilder
 
@@ -30,7 +29,6 @@ def builder(registry: CapabilityRegistry) -> PlanBuilder:
 
 
 def _analysis(
-    task_type: TaskType = TaskType.CODE_REVIEW,
     confidence: float = 0.92,
     risk_level: RiskLevel = RiskLevel.LOW,
     requires_hitl: bool = False,
@@ -38,7 +36,6 @@ def _analysis(
     constraints: list[str] | None = None,
 ) -> GoalAnalysis:
     return GoalAnalysis(
-        task_type=task_type,
         required_capabilities=required_capabilities or [
             "fetch_pr_data",
             "review_code_quality",
@@ -55,7 +52,6 @@ def _analysis(
 
 def _unsupported_analysis() -> GoalAnalysis:
     return GoalAnalysis(
-        task_type=TaskType.UNSUPPORTED,
         required_capabilities=[],
         risk_level=RiskLevel.LOW,
         confidence=0.0,
@@ -100,9 +96,9 @@ class TestPlanBuilderOutputShape:
         assert isinstance(plan.explanation, str)
         assert len(plan.explanation) > 0
 
-    def test_explanation_mentions_task_type(self, builder: PlanBuilder):
+    def test_explanation_mentions_capabilities(self, builder: PlanBuilder):
         plan = builder.build("Review PR #42", _analysis())
-        assert "code_review" in plan.explanation
+        assert "capabilities" in plan.explanation
 
     def test_explanation_mentions_pattern(self, builder: PlanBuilder):
         plan = builder.build("Review PR #42", _analysis())
@@ -264,3 +260,37 @@ class TestPlanBuilderWarnings:
             _analysis(requires_hitl=True, risk_level=RiskLevel.HIGH),
         )
         assert any("hitl" in w.lower() for w in plan.warnings)
+
+
+# ---------------------------------------------------------------------------
+# V3.2 new fields
+# ---------------------------------------------------------------------------
+
+
+class TestPlanBuilderV32Fields:
+    def test_task_label_defaults_to_empty_string(self, builder: PlanBuilder):
+        plan = builder.build("Review PR #42", _analysis())
+        assert plan.task_label == ""
+
+    def test_goal_analysis_missing_capabilities_defaults_to_empty(self, builder: PlanBuilder):
+        plan = builder.build("Review PR #42", _analysis())
+        assert plan.goal_analysis.missing_capabilities == []
+
+    def test_goal_analysis_missing_capabilities_preserved_on_plan(self, builder: PlanBuilder):
+        analysis = _analysis()
+        analysis.missing_capabilities = ["unavailable_cap"]
+        plan = builder.build("Review PR #42", analysis)
+        assert plan.goal_analysis.missing_capabilities == ["unavailable_cap"]
+
+    def test_agent_selection_driven_by_capabilities(self, builder: PlanBuilder):
+        # A single-capability goal selects only the agent covering that capability.
+        plan = builder.build("Assess security", _analysis(required_capabilities=["assess_security"]))
+        assert plan.selected_agents == ["risk_specialist"]
+
+    def test_agent_selection_preserves_encounter_order(self, builder: PlanBuilder):
+        # Capability order in required_capabilities determines agent order in plan.
+        plan = builder.build(
+            "Review PR",
+            _analysis(required_capabilities=["fetch_pr_data", "review_code_quality"]),
+        )
+        assert plan.selected_agents == ["pr_data_agent", "review_specialist"]
