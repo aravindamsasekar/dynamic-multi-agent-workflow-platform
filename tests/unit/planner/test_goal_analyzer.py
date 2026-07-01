@@ -12,7 +12,7 @@ from platform.core.models.tool import ToolDefinition
 from platform.llm.mock_provider import MockLLMProvider
 from platform.planner.capability_registry import CapabilityRegistry
 from platform.planner.goal_analyzer import GoalAnalyzer
-from platform.planner.models import GoalAnalysis, PlannerError, RiskLevel
+from platform.planner.models import GoalAnalysis, OperationType, PlannerError, RiskLevel, ToolCapabilityDescriptor
 
 
 # ---------------------------------------------------------------------------
@@ -545,3 +545,68 @@ class TestGoalAnalyzerUnsupportedGoals:
         assert result.required_capabilities == []
         assert "knowledge_search" in result.missing_capabilities
         assert "summarization" in result.missing_capabilities
+
+
+# ---------------------------------------------------------------------------
+# Filesystem generatable capability (Phase D)
+# ---------------------------------------------------------------------------
+
+
+def _fs_registry() -> CapabilityRegistry:
+    """PR review registry extended with filesystem_read as a generatable capability."""
+    registry = CapabilityRegistry.build_pr_review_registry()
+    registry.register_tool(ToolCapabilityDescriptor(
+        tool_name="filesystem_read_file",
+        name="Filesystem Read File",
+        description="Reads a local file.",
+        capabilities=["filesystem_read"],
+        operation_type=OperationType.READ,
+        data_source="local",
+    ))
+    registry.register_generatable_capability("filesystem_read")
+    return registry
+
+
+class TestGoalAnalyzerFilesystemCapability:
+    async def test_filesystem_read_in_system_prompt_when_registered(self):
+        capturing = _CapturingLLMProvider(
+            _json(required_capabilities=["filesystem_read"])
+        )
+        analyzer = GoalAnalyzer(llm=capturing, registry=_fs_registry())
+        await analyzer.analyze("Read README.md")
+        system_prompt = capturing.captured_messages[0].content
+        assert "filesystem_read" in system_prompt
+
+    async def test_filesystem_read_passes_anti_hallucination_filter(self):
+        llm = MockLLMProvider([_response(_json(required_capabilities=["filesystem_read"]))])
+        result = await GoalAnalyzer(llm=llm, registry=_fs_registry()).analyze("Read README.md")
+        assert "filesystem_read" in result.required_capabilities
+        assert "filesystem_read" not in result.missing_capabilities
+
+    async def test_filesystem_read_in_missing_without_registration(self):
+        """Without explicit generatable registration, filesystem_read is filtered out."""
+        result = await _analyzer(
+            _json(required_capabilities=["filesystem_read"])
+        ).analyze("Read README.md")
+        assert "filesystem_read" not in result.required_capabilities
+        assert "filesystem_read" in result.missing_capabilities
+
+    async def test_all_agent_caps_still_present_with_filesystem_registered(self):
+        registry = _fs_registry()
+        capturing = _CapturingLLMProvider(_json())
+        analyzer = GoalAnalyzer(llm=capturing, registry=registry)
+        await analyzer.analyze("Review PR")
+        system_prompt = capturing.captured_messages[0].content
+        for cap in registry.all_agent_capabilities():
+            assert cap in system_prompt
+
+    async def test_filesystem_and_agent_cap_both_valid(self):
+        llm = MockLLMProvider([_response(
+            _json(required_capabilities=["fetch_pr_data", "filesystem_read"])
+        )])
+        result = await GoalAnalyzer(llm=llm, registry=_fs_registry()).analyze(
+            "Review PR and read README"
+        )
+        assert "fetch_pr_data" in result.required_capabilities
+        assert "filesystem_read" in result.required_capabilities
+        assert result.missing_capabilities == []

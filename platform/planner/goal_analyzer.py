@@ -176,7 +176,7 @@ class GoalAnalyzer:
         self._registry = registry
 
     def _build_system_prompt(self) -> str:
-        allowed = sorted(self._registry.all_agent_capabilities())
+        allowed = sorted(self._registry.all_capabilities())
         capability_list = "\n".join(f"- {cap}" for cap in allowed)
         return _SYSTEM_PROMPT_TEMPLATE.format(
             capability_list=capability_list,
@@ -199,5 +199,5 @@ class GoalAnalyzer:
         if not raw_text:
             raise PlannerError("LLM returned no text content")
 
-        allowed = frozenset(self._registry.all_agent_capabilities())
+        allowed = frozenset(self._registry.all_capabilities())
         return _parse_goal_analysis(raw_text, allowed)

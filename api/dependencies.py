@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from platform.config.loader import ConfigLoader
 from platform.core.interfaces.llm import ILLMProvider
+from platform.core.models.tool import AdapterType, ToolDefinition
 from platform.hitl.approval_manager import ApprovalManager
 from platform.knowledge.config import KnowledgeConfig
 from platform.knowledge.embedder import OpenAIEmbedder
@@ -26,9 +27,12 @@ from platform.observability.persisting_observer import PersistingObserver
 from platform.orchestrator.orchestrator import Orchestrator
 from platform.orchestrator.run_manager import RunManager
 from platform.persistence.database import Base, build_engine, build_session_factory
+from platform.persistence.repositories.plan_repo import PlanRepository
 from platform.planner.capability_registry import CapabilityRegistry
 from platform.planner.execution_adapter import ExecutionAdapter
+from platform.planner.models import OperationType, ToolCapabilityDescriptor
 from platform.planner.planner_service import PlannerService
+from platform.tools.filesystem_adapter import FilesystemAdapter
 from platform.policy.engine import PolicyEngine
 from platform.registries.agent_registry import AgentRegistry
 from platform.registries.tool_registry import ToolRegistry
@@ -64,6 +68,15 @@ def initialize(
     session_factory = build_session_factory(engine)
     _session_factory = session_factory
 
+    # Phase C startup migration: upgrade any preview_only plans to pending_review.
+    # preview_only was created before generated agents were executable; it no longer exists.
+    _migration_repo = PlanRepository()
+    with session_factory() as _mig_session:
+        _count = _migration_repo.upgrade_preview_only_to_pending_review(_mig_session)
+        _mig_session.commit()
+    if _count:
+        print(f"[Planner] Migrated {_count} preview_only plan(s) to pending_review.", file=sys.stderr)
+
     # 2. Knowledge stack — built before ConfigLoader so it can be wired to tools
     cfg_path = knowledge_config_path if knowledge_config_path is not None else Path("knowledge_config.yaml")
     service, indexer = _build_knowledge_stack(cfg_path, session_factory)
@@ -77,6 +90,27 @@ def initialize(
     ConfigLoader(
         wf_registry, ag_registry, tl_registry, knowledge_service=service
     ).load_all(workflows_dir)
+
+    # Register filesystem tool in the runtime registry so generated agents can call it.
+    tl_registry.register(
+        "filesystem_read_file",
+        FilesystemAdapter(),
+        ToolDefinition(
+            name="filesystem_read_file",
+            description="Reads a local file and returns its UTF-8 contents.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the file to read, relative to the working directory",
+                    }
+                },
+                "required": ["path"],
+            },
+            adapter_type=AdapterType.FILESYSTEM,
+        ),
+    )
 
     memory_store = InMemoryStore()
     shared_state = SharedState()
@@ -110,11 +144,22 @@ def initialize(
 
     # V3 planner stack
     cap_registry = CapabilityRegistry.build_pr_review_registry()
+    # Extend with filesystem capability for generated-agent path.
+    cap_registry.register_tool(ToolCapabilityDescriptor(
+        tool_name="filesystem_read_file",
+        name="Filesystem Read File",
+        description="Reads a local file and returns its UTF-8 contents.",
+        capabilities=["filesystem_read"],
+        operation_type=OperationType.READ,
+        data_source="local",
+    ))
+    cap_registry.register_generatable_capability("filesystem_read")
     _capability_registry = cap_registry
     _planner_service = PlannerService(llm=llm_provider, registry=cap_registry)
     _execution_adapter = ExecutionAdapter(
         orchestrator=orchestrator,
         workflow_registry=wf_registry,
+        agent_registry=ag_registry,
         capability_registry=cap_registry,
     )
 

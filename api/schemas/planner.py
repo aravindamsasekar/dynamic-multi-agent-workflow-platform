@@ -43,14 +43,26 @@ class ValidationResultResponse(BaseModel):
     warnings: list[ValidationWarningResponse]
 
 
+class RuntimeAgentResponse(BaseModel):
+    id: str
+    name: str
+    description: str
+    capabilities: list[str]
+    tool_names: list[str]
+    system_prompt: str
+    generated: bool
+
+
 class GeneratePlanResponse(BaseModel):
     plan_id: str
     goal: str
     status: str
+    executable: bool
     task_label: str
     goal_analysis: GoalAnalysisResponse
     selected_pattern: str
     selected_agents: list[str]
+    runtime_agents: list[RuntimeAgentResponse]
     selected_tools: list[str]
     guardrails: list[GuardrailConfigResponse]
     hitl_required: bool

@@ -33,6 +33,10 @@ class AgentRegistry:
         """Return True if an agent with the given id is registered."""
         return agent_id in self._store
 
+    def unregister(self, agent_id: str) -> None:
+        """Remove an AgentDefinition by id. No-op if not present."""
+        self._store.pop(agent_id, None)
+
     def clear(self) -> None:
         """Remove all registered AgentDefinitions."""
         self._store.clear()

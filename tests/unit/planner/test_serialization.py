@@ -9,6 +9,7 @@ from platform.planner.models import (
     GoalAnalysis,
     GuardrailConfig,
     RiskLevel,
+    RuntimeAgentDefinition,
     ValidationError,
     ValidationResult,
     ValidationWarning,
@@ -184,3 +185,78 @@ class TestValidationRoundTrip:
         )
         restored = validation_from_json(validation_to_json(v))
         assert restored.warnings[0].code == "LOW_CONFIDENCE"
+
+
+# ---------------------------------------------------------------------------
+# runtime_agents serialization (Phase B)
+# ---------------------------------------------------------------------------
+
+
+def _make_runtime_agent(agent_id: str, generated: bool = False) -> RuntimeAgentDefinition:
+    return RuntimeAgentDefinition(
+        id=agent_id,
+        name=f"{agent_id} name",
+        description=f"{agent_id} description",
+        capabilities=[f"{agent_id}_cap"],
+        tool_names=[] if not generated else ["some_tool"],
+        system_prompt="" if not generated else f"You handle {agent_id}.",
+        generated=generated,
+    )
+
+
+class TestRuntimeAgentsSerialization:
+    def test_runtime_agents_empty_round_trips(self):
+        plan = _make_plan()
+        restored = plan_from_json(plan_to_json(plan))
+        assert restored.runtime_agents == []
+
+    def test_runtime_agents_non_empty_round_trips(self):
+        plan = _make_plan()
+        plan.runtime_agents = [_make_runtime_agent("pr_data_agent", generated=False)]
+        restored = plan_from_json(plan_to_json(plan))
+        assert len(restored.runtime_agents) == 1
+        assert restored.runtime_agents[0].id == "pr_data_agent"
+
+    def test_static_agent_generated_flag_round_trips(self):
+        plan = _make_plan()
+        plan.runtime_agents = [_make_runtime_agent("static_agent", generated=False)]
+        restored = plan_from_json(plan_to_json(plan))
+        assert restored.runtime_agents[0].generated is False
+
+    def test_generated_agent_flag_round_trips(self):
+        plan = _make_plan()
+        plan.runtime_agents = [_make_runtime_agent("gen_agent", generated=True)]
+        restored = plan_from_json(plan_to_json(plan))
+        assert restored.runtime_agents[0].generated is True
+
+    def test_generated_agent_tool_names_round_trip(self):
+        plan = _make_plan()
+        plan.runtime_agents = [_make_runtime_agent("gen_agent", generated=True)]
+        restored = plan_from_json(plan_to_json(plan))
+        assert restored.runtime_agents[0].tool_names == ["some_tool"]
+
+    def test_old_json_without_runtime_agents_key_reconstructs_from_selected_agents(self):
+        """Old rows without 'runtime_agents' key reconstruct from 'selected_agents'."""
+        plan = _make_plan()
+        d = json.loads(plan_to_json(plan))
+        del d["runtime_agents"]
+        restored = plan_from_json(json.dumps(d))
+        # Should reconstruct from selected_agents = ["pr_data_agent", "review_specialist"]
+        assert len(restored.runtime_agents) == 2
+        ids = {r.id for r in restored.runtime_agents}
+        assert "pr_data_agent" in ids
+        assert "review_specialist" in ids
+
+    def test_reconstructed_old_plan_agents_are_not_generated(self):
+        plan = _make_plan()
+        d = json.loads(plan_to_json(plan))
+        del d["runtime_agents"]
+        restored = plan_from_json(json.dumps(d))
+        assert all(not r.generated for r in restored.runtime_agents)
+
+    def test_plan_serialization_includes_both_agent_fields(self):
+        plan = _make_plan()
+        plan.runtime_agents = [_make_runtime_agent("pr_data_agent")]
+        d = json.loads(plan_to_json(plan))
+        assert "selected_agents" in d
+        assert "runtime_agents" in d

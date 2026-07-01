@@ -20,6 +20,7 @@ from api.schemas.planner import (
     GuardrailConfigResponse,
     PlanStatusResponse,
     RejectPlanRequest,
+    RuntimeAgentResponse,
     ValidationErrorResponse,
     ValidationResultResponse,
     ValidationWarningResponse,
@@ -40,10 +41,12 @@ def _to_plan_response(
     status: str,
 ) -> GeneratePlanResponse:
     a = plan.goal_analysis
+    executable = validation.is_valid
     return GeneratePlanResponse(
         plan_id=plan.plan_id,
         goal=plan.user_goal,
         status=status,
+        executable=executable,
         task_label=plan.task_label,
         goal_analysis=GoalAnalysisResponse(
             required_capabilities=a.required_capabilities,
@@ -55,6 +58,18 @@ def _to_plan_response(
         ),
         selected_pattern=plan.selected_pattern,
         selected_agents=plan.selected_agents,
+        runtime_agents=[
+            RuntimeAgentResponse(
+                id=r.id,
+                name=r.name,
+                description=r.description,
+                capabilities=r.capabilities,
+                tool_names=r.tool_names,
+                system_prompt=r.system_prompt,
+                generated=r.generated,
+            )
+            for r in plan.runtime_agents
+        ],
         selected_tools=plan.selected_tools,
         guardrails=[
             GuardrailConfigResponse(rule_type=g.rule_type, config=g.config, reason=g.reason)
@@ -84,9 +99,10 @@ async def generate_plan(
         plan, validation = await planner.generate(request.goal)
     except PlannerError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    _plan_repo.create(session, plan, validation)
+    status = "pending_review"
+    _plan_repo.create(session, plan, validation, status=status)
     session.commit()
-    return _to_plan_response(plan, validation, status="pending_review")
+    return _to_plan_response(plan, validation, status=status)
 
 
 @router.get("/{plan_id}", response_model=GeneratePlanResponse)
@@ -118,6 +134,12 @@ async def approve_plan(
         raise HTTPException(
             status_code=409,
             detail=f"Plan cannot be approved (current status: {row.status})",
+        )
+    validation = validation_from_json(row.validation_json)
+    if not validation.is_valid:
+        raise HTTPException(
+            status_code=409,
+            detail="Plan cannot be approved: validation failed",
         )
     plan = plan_from_json(row.plan_json)
     result = await adapter.execute(plan, request.input_data)

@@ -107,6 +107,14 @@ class GeneratedWorkflowPlan:
     Contains all selections (pattern, agents, tools) and guardrail configs
     needed to execute the workflow. Does not execute anything — execution
     is triggered separately after user approval (Phase E).
+
+    Invariant (Phase B):
+        selected_agents == [r.id for r in runtime_agents if not r.generated]
+
+    PlanBuilder is the sole component that constructs and populates both
+    selected_agents and runtime_agents. No other component mutates either field.
+    selected_agents contains only static (executable) agent IDs; runtime_agents
+    contains the full planning result including generated agent definitions.
     """
 
     plan_id: str
@@ -122,6 +130,7 @@ class GeneratedWorkflowPlan:
     estimated_complexity: str
     estimated_duration_seconds: int
     task_label: str = ""
+    runtime_agents: list["RuntimeAgentDefinition"] = field(default_factory=list)
 
 
 class OperationType(str, Enum):
@@ -165,6 +174,58 @@ class ToolCapabilityDescriptor:
     requires_mcp: bool = False
     is_destructive: bool = False
     requires_hitl: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Runtime agent generation (Phase A — Dynamic Agent Generation)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RuntimeAgentDefinition:
+    """Unified agent reference produced by RuntimeAgentGenerator.
+
+    generated=False: a static registered agent to reuse; `id` is the registry
+    agent_id and `system_prompt` is empty — the runtime loads the full definition
+    by ID with no change to the V2 runtime.
+
+    generated=True: a deterministically generated agent for an unregistered
+    capability; `system_prompt` and `tool_names` are fully populated and no
+    LLM is involved in their construction.
+
+    Closely mirrors AgentDefinition so Phase B can convert with minimal code.
+    """
+
+    id: str
+    name: str
+    description: str
+    capabilities: list[str]
+    tool_names: list[str]
+    system_prompt: str
+    generated: bool
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "capabilities": list(self.capabilities),
+            "tool_names": list(self.tool_names),
+            "system_prompt": self.system_prompt,
+            "generated": self.generated,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "RuntimeAgentDefinition":
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            description=data["description"],
+            capabilities=list(data["capabilities"]),
+            tool_names=list(data["tool_names"]),
+            system_prompt=data["system_prompt"],
+            generated=bool(data["generated"]),
+        )
 
 
 @dataclass

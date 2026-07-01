@@ -41,6 +41,24 @@ class PlanRepository:
         stmt = select(GeneratedPlanRow).order_by(GeneratedPlanRow.created_at.desc())
         return list(session.scalars(stmt).all())
 
+    def upgrade_preview_only_to_pending_review(self, session: Session) -> int:
+        """Phase C startup migration: convert all preview_only rows to pending_review.
+
+        Returns the number of rows updated. Called once at server startup so that
+        plans generated before Phase C (when generated agents were not executable)
+        become approvable. After the transition period this method can be removed.
+        """
+        rows = (
+            session.query(GeneratedPlanRow)
+            .filter(GeneratedPlanRow.status == "preview_only")
+            .all()
+        )
+        now = datetime.utcnow()
+        for row in rows:
+            row.status = "pending_review"
+            row.updated_at = now
+        return len(rows)
+
     def update_status(
         self,
         session: Session,

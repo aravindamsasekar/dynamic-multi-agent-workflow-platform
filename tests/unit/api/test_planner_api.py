@@ -29,6 +29,7 @@ from platform.planner.models import (
     GoalAnalysis,
     GuardrailConfig,
     RiskLevel,
+    RuntimeAgentDefinition,
     ValidationError,
     ValidationResult,
     ValidationWarning,
@@ -121,10 +122,20 @@ def db_factory():
 
 @pytest.fixture
 def seeded_db(db_factory):
-    """DB pre-loaded with one pending plan."""
+    """DB pre-loaded with one valid pending plan."""
     repo = PlanRepository()
     with db_factory() as s:
         repo.create(s, _make_plan(), _make_validation())
+        s.commit()
+    return db_factory
+
+
+@pytest.fixture
+def invalid_seeded_db(db_factory):
+    """DB pre-loaded with one invalid (is_valid=False) pending plan."""
+    repo = PlanRepository()
+    with db_factory() as s:
+        repo.create(s, _make_plan(), _make_validation(is_valid=False))
         s.commit()
     return db_factory
 
@@ -230,6 +241,28 @@ class TestGeneratePlan:
         response = await empty_client.post("/planner/generate", json={"goal": "Review PR"})
         data = response.json()
         assert data["explanation"] == "A parallel PR review workflow."
+
+    async def test_response_includes_executable_field(self, empty_client: AsyncClient):
+        response = await empty_client.post("/planner/generate", json={"goal": "Review PR"})
+        data = response.json()
+        assert "executable" in data
+        assert isinstance(data["executable"], bool)
+
+    async def test_response_all_static_plan_is_executable(self, empty_client: AsyncClient):
+        # _MockPlannerService returns a plan with runtime_agents=[] — all static → executable
+        response = await empty_client.post("/planner/generate", json={"goal": "Review PR"})
+        data = response.json()
+        assert data["executable"] is True
+
+    async def test_response_includes_runtime_agents_field(self, empty_client: AsyncClient):
+        response = await empty_client.post("/planner/generate", json={"goal": "Review PR"})
+        data = response.json()
+        assert "runtime_agents" in data
+
+    async def test_response_runtime_agents_is_list(self, empty_client: AsyncClient):
+        response = await empty_client.post("/planner/generate", json={"goal": "Review PR"})
+        data = response.json()
+        assert isinstance(data["runtime_agents"], list)
 
     async def test_planner_error_returns_422(self, empty_db):
         from platform.planner.models import PlannerError
@@ -342,6 +375,45 @@ class TestApprovePlan:
         response = await client.post(f"/planner/{_PLAN_ID}/approve", json={"input_data": input_data})
         assert response.status_code == 200
 
+    async def test_returns_409_for_invalid_plan(self, invalid_seeded_db):
+        """Invalid plans (is_valid=False) must be rejected before reaching the adapter."""
+        _test_app.dependency_overrides[get_db_session] = _session_override(invalid_seeded_db)
+        try:
+            async with AsyncClient(transport=ASGITransport(app=_test_app), base_url="http://test") as c:
+                response = await c.post(f"/planner/{_PLAN_ID}/approve", json={"input_data": ""})
+            assert response.status_code == 409
+        finally:
+            _test_app.dependency_overrides.pop(get_db_session, None)
+
+    async def test_invalid_plan_409_detail_mentions_validation(self, invalid_seeded_db):
+        _test_app.dependency_overrides[get_db_session] = _session_override(invalid_seeded_db)
+        try:
+            async with AsyncClient(transport=ASGITransport(app=_test_app), base_url="http://test") as c:
+                response = await c.post(f"/planner/{_PLAN_ID}/approve", json={"input_data": ""})
+            assert "validation" in response.json()["detail"].lower()
+        finally:
+            _test_app.dependency_overrides.pop(get_db_session, None)
+
+    async def test_invalid_plan_adapter_never_called(self, invalid_seeded_db):
+        """Execution adapter must not be invoked when validation failed."""
+        call_log: list[str] = []
+
+        class _SpyAdapter:
+            async def execute(self, plan, input_data):
+                call_log.append("execute")
+                raise AssertionError("adapter must not be called for invalid plans")
+
+        _test_app.dependency_overrides[get_execution_adapter] = lambda: _SpyAdapter()
+        _test_app.dependency_overrides[get_db_session] = _session_override(invalid_seeded_db)
+        try:
+            async with AsyncClient(transport=ASGITransport(app=_test_app), base_url="http://test") as c:
+                response = await c.post(f"/planner/{_PLAN_ID}/approve", json={"input_data": ""})
+            assert response.status_code == 409
+            assert call_log == []
+        finally:
+            _test_app.dependency_overrides[get_execution_adapter] = lambda: _MockExecutionAdapter()
+            _test_app.dependency_overrides.pop(get_db_session, None)
+
 
 # ---------------------------------------------------------------------------
 # POST /planner/{plan_id}/reject
@@ -395,3 +467,150 @@ class TestRejectPlan:
     async def test_reject_no_body_uses_default_reason(self, client: AsyncClient):
         response = await client.post(f"/planner/{_PLAN_ID}/reject", json={})
         assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# POST /planner/generate — plans with generated agents (Phase C)
+# ---------------------------------------------------------------------------
+
+_GEN_AGENT_ID = "gen-plan-test-001_filesystem_read"
+
+
+def _make_plan_with_generated_agent(plan_id: str = _PLAN_ID) -> GeneratedWorkflowPlan:
+    """Plan with one static + one generated agent (Phase C format)."""
+    return GeneratedWorkflowPlan(
+        plan_id=plan_id,
+        user_goal="Review PR #42 and analyse filesystem",
+        goal_analysis=GoalAnalysis(
+            required_capabilities=["fetch_pr_data", "filesystem_read"],
+            risk_level=RiskLevel.LOW,
+            confidence=0.9,
+            reasoning="Needs a generated agent.",
+            constraints=[],
+            requires_hitl=False,
+        ),
+        selected_pattern="parallel_specialist",
+        selected_agents=["pr_data_agent"],
+        selected_tools=["github_get_pr"],
+        guardrails=[],
+        hitl_required=False,
+        warnings=[],
+        explanation="Plan with a generated agent.",
+        estimated_complexity="low",
+        estimated_duration_seconds=25,
+        runtime_agents=[
+            RuntimeAgentDefinition(
+                id="pr_data_agent",
+                name="PR Data Agent",
+                description="",
+                capabilities=["fetch_pr_data"],
+                tool_names=[],
+                system_prompt="",
+                generated=False,
+            ),
+            RuntimeAgentDefinition(
+                id=_GEN_AGENT_ID,
+                name="Filesystem Read Agent",
+                description="",
+                capabilities=["filesystem_read"],
+                tool_names=[],
+                system_prompt="You handle filesystem_read.",
+                generated=True,
+            ),
+        ],
+    )
+
+
+class _MockPlannerServiceWithGeneratedAgent:
+    async def generate(self, goal: str):
+        return _make_plan_with_generated_agent(), _make_validation()
+
+
+class TestGeneratedAgentPlan:
+    async def test_plan_with_generated_agent_status_is_pending_review(self, empty_db):
+        """Generated agents are now executable — status is pending_review, not preview_only."""
+        _test_app.dependency_overrides[get_planner_service] = (
+            lambda: _MockPlannerServiceWithGeneratedAgent()
+        )
+        _test_app.dependency_overrides[get_db_session] = _session_override(empty_db)
+        try:
+            async with AsyncClient(transport=ASGITransport(app=_test_app), base_url="http://test") as c:
+                response = await c.post("/planner/generate", json={"goal": "Review PR and scan files"})
+            assert response.status_code == 201
+            assert response.json()["status"] == "pending_review"
+        finally:
+            _test_app.dependency_overrides[get_planner_service] = lambda: _MockPlannerService()
+            _test_app.dependency_overrides.pop(get_db_session, None)
+
+    async def test_plan_with_generated_agent_is_executable(self, empty_db):
+        """executable=True when validation passes — regardless of generated agents."""
+        _test_app.dependency_overrides[get_planner_service] = (
+            lambda: _MockPlannerServiceWithGeneratedAgent()
+        )
+        _test_app.dependency_overrides[get_db_session] = _session_override(empty_db)
+        try:
+            async with AsyncClient(transport=ASGITransport(app=_test_app), base_url="http://test") as c:
+                response = await c.post("/planner/generate", json={"goal": "Review PR and scan files"})
+            assert response.json()["executable"] is True
+        finally:
+            _test_app.dependency_overrides[get_planner_service] = lambda: _MockPlannerService()
+            _test_app.dependency_overrides.pop(get_db_session, None)
+
+    async def test_plan_with_generated_agent_can_be_approved(self, empty_db):
+        """Generated-agent plans with pending_review status can be approved (200)."""
+        _test_app.dependency_overrides[get_planner_service] = (
+            lambda: _MockPlannerServiceWithGeneratedAgent()
+        )
+        _test_app.dependency_overrides[get_db_session] = _session_override(empty_db)
+        try:
+            async with AsyncClient(transport=ASGITransport(app=_test_app), base_url="http://test") as c:
+                gen_response = await c.post(
+                    "/planner/generate", json={"goal": "Review PR and scan files"}
+                )
+                plan_id = gen_response.json()["plan_id"]
+                approve_response = await c.post(
+                    f"/planner/{plan_id}/approve", json={"input_data": ""}
+                )
+            assert approve_response.status_code == 200
+        finally:
+            _test_app.dependency_overrides[get_planner_service] = lambda: _MockPlannerService()
+            _test_app.dependency_overrides.pop(get_db_session, None)
+
+    async def test_invalid_plan_is_not_executable(self, empty_db):
+        """executable=False when validation fails."""
+        class _InvalidPlannerService:
+            async def generate(self, goal: str):
+                plan = _make_plan_with_generated_agent()
+                invalid = ValidationResult(
+                    is_valid=False,
+                    errors=[ValidationError(code="MISSING_AGENT", message="Agent missing.")],
+                    warnings=[],
+                )
+                return plan, invalid
+
+        _test_app.dependency_overrides[get_planner_service] = lambda: _InvalidPlannerService()
+        _test_app.dependency_overrides[get_db_session] = _session_override(empty_db)
+        try:
+            async with AsyncClient(transport=ASGITransport(app=_test_app), base_url="http://test") as c:
+                response = await c.post("/planner/generate", json={"goal": "Review PR and scan files"})
+            assert response.json()["executable"] is False
+        finally:
+            _test_app.dependency_overrides[get_planner_service] = lambda: _MockPlannerService()
+            _test_app.dependency_overrides.pop(get_db_session, None)
+
+    async def test_runtime_agents_in_response_includes_generated_flag(self, empty_db):
+        _test_app.dependency_overrides[get_planner_service] = (
+            lambda: _MockPlannerServiceWithGeneratedAgent()
+        )
+        _test_app.dependency_overrides[get_db_session] = _session_override(empty_db)
+        try:
+            async with AsyncClient(transport=ASGITransport(app=_test_app), base_url="http://test") as c:
+                response = await c.post("/planner/generate", json={"goal": "Review PR and scan files"})
+            agents = response.json()["runtime_agents"]
+            assert len(agents) == 2
+            generated_flags = {a["id"]: a["generated"] for a in agents}
+            assert generated_flags["pr_data_agent"] is False
+            assert generated_flags[_GEN_AGENT_ID] is True
+        finally:
+            _test_app.dependency_overrides[get_planner_service] = lambda: _MockPlannerService()
+            _test_app.dependency_overrides.pop(get_db_session, None)

@@ -227,3 +227,52 @@ class TestPlanRepositoryUpdateStatus:
         session.commit()
         row = repo.get(session, "plan-nid")
         assert row.execution_run_id == "run-1"
+
+
+# ---------------------------------------------------------------------------
+# upgrade_preview_only_to_pending_review (Phase C startup migration)
+# ---------------------------------------------------------------------------
+
+
+class TestPlanRepositoryUpgradePreviewOnly:
+    def test_upgrades_preview_only_rows(self, session, repo):
+        repo.create(session, _make_plan("p-prev-1"), _make_validation(), status="preview_only")
+        repo.create(session, _make_plan("p-prev-2"), _make_validation(), status="preview_only")
+        session.commit()
+        count = repo.upgrade_preview_only_to_pending_review(session)
+        session.commit()
+        assert count == 2
+        assert repo.get(session, "p-prev-1").status == "pending_review"
+        assert repo.get(session, "p-prev-2").status == "pending_review"
+
+    def test_does_not_touch_pending_review_rows(self, session, repo):
+        repo.create(session, _make_plan("p-ok"), _make_validation(), status="pending_review")
+        session.commit()
+        repo.upgrade_preview_only_to_pending_review(session)
+        session.commit()
+        assert repo.get(session, "p-ok").status == "pending_review"
+
+    def test_does_not_touch_executed_rows(self, session, repo):
+        repo.create(session, _make_plan("p-ex"), _make_validation(), status="executed")
+        session.commit()
+        repo.upgrade_preview_only_to_pending_review(session)
+        session.commit()
+        assert repo.get(session, "p-ex").status == "executed"
+
+    def test_returns_zero_when_no_preview_only_rows(self, session, repo):
+        repo.create(session, _make_plan("p-none"), _make_validation(), status="pending_review")
+        session.commit()
+        count = repo.upgrade_preview_only_to_pending_review(session)
+        assert count == 0
+
+    def test_returns_zero_on_empty_table(self, session, repo):
+        count = repo.upgrade_preview_only_to_pending_review(session)
+        assert count == 0
+
+    def test_idempotent_second_call_upgrades_zero(self, session, repo):
+        repo.create(session, _make_plan("p-idem"), _make_validation(), status="preview_only")
+        session.commit()
+        repo.upgrade_preview_only_to_pending_review(session)
+        session.commit()
+        second = repo.upgrade_preview_only_to_pending_review(session)
+        assert second == 0

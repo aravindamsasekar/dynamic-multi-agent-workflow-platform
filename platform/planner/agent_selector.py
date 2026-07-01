@@ -1,4 +1,9 @@
-"""AgentSelector — deterministic, capability-first agent selection."""
+"""AgentSelector — deterministic, capability-first agent selection.
+
+Deprecated since Phase B: PlanBuilder now uses RuntimeAgentGenerator, which
+returns RuntimeAgentDefinition objects covering both static and generated agents.
+AgentSelector is retained for reference but is no longer called by the platform.
+"""
 
 from __future__ import annotations
 

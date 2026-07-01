@@ -294,3 +294,76 @@ class TestPlanBuilderV32Fields:
             _analysis(required_capabilities=["fetch_pr_data", "review_code_quality"]),
         )
         assert plan.selected_agents == ["pr_data_agent", "review_specialist"]
+
+
+# ---------------------------------------------------------------------------
+# Phase B — runtime_agents and selected_agents invariant
+# ---------------------------------------------------------------------------
+
+
+class TestPlanBuilderPhaseB:
+    def test_runtime_agents_populated_by_builder(self, builder: PlanBuilder):
+        plan = builder.build("Review PR #42", _analysis())
+        assert len(plan.runtime_agents) > 0
+
+    def test_runtime_agents_all_static_for_pr_review_caps(self, builder: PlanBuilder):
+        plan = builder.build("Review PR #42", _analysis())
+        assert all(not r.generated for r in plan.runtime_agents)
+
+    def test_selected_agents_invariant_static_subset_of_runtime_agents(self, builder: PlanBuilder):
+        # Invariant: selected_agents == [r.id for r in runtime_agents if not r.generated]
+        plan = builder.build("Review PR #42", _analysis())
+        expected = [r.id for r in plan.runtime_agents if not r.generated]
+        assert plan.selected_agents == expected
+
+    def test_runtime_agents_count_matches_selected_for_all_static(self, builder: PlanBuilder):
+        plan = builder.build("Review PR #42", _analysis())
+        assert len(plan.runtime_agents) == len(plan.selected_agents)
+
+    def test_unknown_cap_creates_generated_runtime_agent(self, builder: PlanBuilder):
+        analysis = _analysis(required_capabilities=["fetch_pr_data", "filesystem_read"])
+        plan = builder.build("Review PR and read files", analysis)
+        generated = [r for r in plan.runtime_agents if r.generated]
+        assert len(generated) == 1
+        # ID is scoped to the plan: gen_{plan_id}_{capability}
+        assert generated[0].id.startswith(f"gen_{plan.plan_id}_")
+        assert "filesystem_read" in generated[0].id
+
+    def test_unknown_cap_excluded_from_selected_agents(self, builder: PlanBuilder):
+        analysis = _analysis(required_capabilities=["fetch_pr_data", "filesystem_read"])
+        plan = builder.build("Review PR and read files", analysis)
+        # Invariant: selected_agents contains no generated agent IDs
+        generated_ids = {r.id for r in plan.runtime_agents if r.generated}
+        assert not generated_ids.intersection(plan.selected_agents)
+
+    def test_known_cap_agent_appears_in_selected_agents(self, builder: PlanBuilder):
+        analysis = _analysis(required_capabilities=["fetch_pr_data", "filesystem_read"])
+        plan = builder.build("Review PR and read files", analysis)
+        assert "pr_data_agent" in plan.selected_agents
+
+    def test_unsupported_goal_has_empty_runtime_agents(self, builder: PlanBuilder):
+        plan = builder.build("What is the weather?", _unsupported_analysis())
+        assert plan.runtime_agents == []
+
+    def test_complexity_uses_full_runtime_team(self, builder: PlanBuilder):
+        plan = builder.build("Review PR #42", _analysis())
+        # 4 PR review caps → 4 static agents in runtime_agents → medium complexity
+        assert len(plan.runtime_agents) == 4
+        assert plan.estimated_complexity == "medium"
+
+    def test_generated_agent_id_appears_in_explanation(self, builder: PlanBuilder):
+        analysis = _analysis(required_capabilities=["filesystem_read"])
+        plan = builder.build("Read some files", analysis)
+        generated = [r for r in plan.runtime_agents if r.generated]
+        assert len(generated) == 1
+        assert generated[0].id in plan.explanation
+
+    def test_agent_selector_not_used_by_plan_builder(self, registry: CapabilityRegistry):
+        from platform.planner.plan_builder import PlanBuilder as PB
+        b = PB(registry=registry)
+        assert not hasattr(b, "_agent_selector")
+
+    def test_runtime_agents_is_list_of_runtime_agent_definitions(self, builder: PlanBuilder):
+        from platform.planner.models import RuntimeAgentDefinition
+        plan = builder.build("Review PR #42", _analysis())
+        assert all(isinstance(r, RuntimeAgentDefinition) for r in plan.runtime_agents)

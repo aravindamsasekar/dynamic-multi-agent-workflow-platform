@@ -10,8 +10,11 @@ from platform.planner.models import (
     GoalAnalysis,
     GeneratedWorkflowPlan,
     GuardrailConfig,
+    OperationType,
     PatternCapabilityDescriptor,
     RiskLevel,
+    RuntimeAgentDefinition,
+    ToolCapabilityDescriptor,
     ValidationResult,
 )
 from platform.planner.plan_builder import PlanBuilder
@@ -235,8 +238,10 @@ class TestValidatorConfidence:
 
 class TestValidatorAgents:
     def test_empty_agents_is_invalid(self, validator: PlanValidator, registry: CapabilityRegistry, builder: PlanBuilder):
+        # Both selected_agents and runtime_agents must be empty to trigger NO_AGENTS_SELECTED.
         plan = _build_valid_plan(builder)
         plan.selected_agents = []
+        plan.runtime_agents = []
         result = validator.validate(plan, registry)
         assert result.is_valid is False
         codes = {e.code for e in result.errors}
@@ -245,16 +250,15 @@ class TestValidatorAgents:
     def test_missing_agent_in_registry_is_invalid(
         self, builder: PlanBuilder, validator: PlanValidator, registry: CapabilityRegistry
     ):
-        plan = _build_valid_plan(builder)
-        plan.selected_agents = ["nonexistent_agent"]
+        # Use _make_plan() directly so runtime_agents defaults to [] (old-plan path).
+        plan = _make_plan(_analysis(), agents=["nonexistent_agent"])
         result = validator.validate(plan, registry)
         assert result.is_valid is False
 
     def test_missing_agent_sets_missing_agent_error_code(
         self, builder: PlanBuilder, validator: PlanValidator, registry: CapabilityRegistry
     ):
-        plan = _build_valid_plan(builder)
-        plan.selected_agents = ["phantom"]
+        plan = _make_plan(_analysis(), agents=["phantom"])
         result = validator.validate(plan, registry)
         codes = {e.code for e in result.errors}
         assert "MISSING_AGENT" in codes
@@ -324,8 +328,11 @@ class TestValidatorCapabilityCoverage:
     def test_unmatched_capability_produces_warning(
         self, builder: PlanBuilder, validator: PlanValidator, registry: CapabilityRegistry
     ):
+        # Use _make_plan() directly so runtime_agents=[] (old-plan path).
+        # In the old path the validator checks agent registry coverage.
+        # pr_data_agent does not cover "telepathy" → CAPABILITY_UNMATCHED.
         analysis = _analysis(required_capabilities=["fetch_pr_data", "telepathy"])
-        plan = builder.build("Review PR #42", analysis)
+        plan = _make_plan(analysis, agents=["pr_data_agent"])
         result = validator.validate(plan, registry)
         codes = {w.code for w in result.warnings}
         assert "CAPABILITY_UNMATCHED" in codes
@@ -437,9 +444,9 @@ class TestValidatorMissingCapabilities:
             required_capabilities=["fetch_pr_data"],
             missing_capabilities=["unknown_cap"],
         )
-        plan = builder.build("Review PR", analysis)
-        # Force an additional agent error to confirm validation continued
-        plan.selected_agents = ["nonexistent_agent"]
+        # Use _make_plan() with an unregistered agent so runtime_agents=[] (old path).
+        # This confirms MISSING_CAPABILITIES does not skip the MISSING_AGENT check.
+        plan = _make_plan(analysis, agents=["nonexistent_agent"])
         result = validator.validate(plan, registry)
         codes = {e.code for e in result.errors}
         assert "MISSING_CAPABILITIES" in codes
@@ -472,15 +479,20 @@ class TestValidatorDataflow:
 
     def test_missing_producer_triggers_dataflow_error(self, builder: PlanBuilder, validator: PlanValidator, registry: CapabilityRegistry):
         """synthesis_agent without review_specialist → code_quality_report unsatisfied."""
-        plan = _build_valid_plan(builder)
-        plan.selected_agents = ["pr_data_agent", "risk_specialist", "synthesis_agent"]
+        # Use _make_plan() so runtime_agents=[] and validator uses selected_agents.
+        plan = _make_plan(
+            _analysis(),
+            agents=["pr_data_agent", "risk_specialist", "synthesis_agent"],
+        )
         result = validator.validate(plan, registry)
         error_codes = {e.code for e in result.errors}
         assert "DATAFLOW_UNSATISFIED" in error_codes
 
     def test_dataflow_error_names_missing_token(self, builder: PlanBuilder, validator: PlanValidator, registry: CapabilityRegistry):
-        plan = _build_valid_plan(builder)
-        plan.selected_agents = ["pr_data_agent", "risk_specialist", "synthesis_agent"]
+        plan = _make_plan(
+            _analysis(),
+            agents=["pr_data_agent", "risk_specialist", "synthesis_agent"],
+        )
         result = validator.validate(plan, registry)
         df_errors = [e for e in result.errors if e.code == "DATAFLOW_UNSATISFIED"]
         assert any("code_quality_report" in e.message for e in df_errors)
@@ -529,9 +541,8 @@ class TestValidatorDataflow:
 
     def test_all_consumers_missing_producers_reported(self, builder: PlanBuilder, validator: PlanValidator, registry: CapabilityRegistry):
         """synthesis_agent missing both specialist producers — two unsatisfied tokens."""
-        plan = _build_valid_plan(builder)
-        # Only pr_data_agent + synthesis_agent: neither specialist is present
-        plan.selected_agents = ["pr_data_agent", "synthesis_agent"]
+        # Use _make_plan() so runtime_agents=[] and validator uses selected_agents.
+        plan = _make_plan(_analysis(), agents=["pr_data_agent", "synthesis_agent"])
         result = validator.validate(plan, registry)
         df_errors = [e for e in result.errors if e.code == "DATAFLOW_UNSATISFIED"]
         # Both code_quality_report and risk_assessment_report are unsatisfied
@@ -539,3 +550,173 @@ class TestValidatorDataflow:
         missing_tokens = {e.message.split("'")[1] for e in df_errors}
         assert "code_quality_report" in missing_tokens
         assert "risk_assessment_report" in missing_tokens
+
+
+# ---------------------------------------------------------------------------
+# Phase B — generated agent correctness checks
+# ---------------------------------------------------------------------------
+
+
+def _make_generated_agent(
+    agent_id: str,
+    capabilities: list[str],
+    tool_names: list[str] | None = None,
+) -> RuntimeAgentDefinition:
+    return RuntimeAgentDefinition(
+        id=agent_id,
+        name=agent_id,
+        description="",
+        capabilities=capabilities,
+        tool_names=tool_names or [],
+        system_prompt="generated",
+        generated=True,
+    )
+
+
+def _make_static_agent(agent_id: str, capabilities: list[str]) -> RuntimeAgentDefinition:
+    return RuntimeAgentDefinition(
+        id=agent_id,
+        name=agent_id,
+        description="",
+        capabilities=capabilities,
+        tool_names=[],
+        system_prompt="",
+        generated=False,
+    )
+
+
+def _registry_with_write_tool() -> CapabilityRegistry:
+    registry = CapabilityRegistry.build_pr_review_registry()
+    registry.register_tool(ToolCapabilityDescriptor(
+        tool_name="file_writer",
+        name="File Writer",
+        description="Writes to filesystem",
+        capabilities=["filesystem_write"],
+        operation_type=OperationType.WRITE,
+        data_source="custom",
+    ))
+    return registry
+
+
+class TestValidatorGeneratedAgents:
+    def test_generated_agent_skipped_in_missing_agent_check(
+        self, validator: PlanValidator, registry: CapabilityRegistry
+    ):
+        generated = _make_generated_agent("new_cap_agent", ["new_cap"])
+        plan = _make_plan(_analysis(required_capabilities=["new_cap"]), agents=[])
+        plan.runtime_agents = [generated]
+        result = validator.validate(plan, registry)
+        codes = {e.code for e in result.errors}
+        assert "MISSING_AGENT" not in codes
+
+    def test_static_agent_still_checked_when_runtime_agents_present(
+        self, validator: PlanValidator, registry: CapabilityRegistry
+    ):
+        unregistered_static = _make_static_agent("ghost_agent", ["fetch_pr_data"])
+        plan = _make_plan(_analysis(required_capabilities=["fetch_pr_data"]), agents=["ghost_agent"])
+        plan.runtime_agents = [unregistered_static]
+        result = validator.validate(plan, registry)
+        codes = {e.code for e in result.errors}
+        assert "MISSING_AGENT" in codes
+
+    def test_no_agents_selected_only_fires_when_both_lists_empty(
+        self, validator: PlanValidator, registry: CapabilityRegistry
+    ):
+        generated = _make_generated_agent("cap_agent", ["some_cap"])
+        plan = _make_plan(_analysis(), agents=[])
+        plan.runtime_agents = [generated]
+        result = validator.validate(plan, registry)
+        codes = {e.code for e in result.errors}
+        assert "NO_AGENTS_SELECTED" not in codes
+
+    def test_both_empty_triggers_no_agents_selected(
+        self, validator: PlanValidator, registry: CapabilityRegistry
+    ):
+        plan = _make_plan(_analysis(), agents=[])
+        plan.runtime_agents = []
+        result = validator.validate(plan, registry)
+        codes = {e.code for e in result.errors}
+        assert "NO_AGENTS_SELECTED" in codes
+
+    def test_generated_agent_no_tools_emits_warning(
+        self, validator: PlanValidator, registry: CapabilityRegistry
+    ):
+        generated = _make_generated_agent("cap_agent", ["some_cap"], tool_names=[])
+        analysis = _analysis(required_capabilities=["some_cap"])
+        plan = _make_plan(analysis, agents=[], tools=["github_get_pr"])
+        plan.runtime_agents = [generated]
+        result = validator.validate(plan, registry)
+        codes = {w.code for w in result.warnings}
+        assert "GENERATED_AGENT_NO_TOOLS" in codes
+
+    def test_generated_agent_with_tools_no_no_tools_warning(
+        self, validator: PlanValidator, registry: CapabilityRegistry
+    ):
+        generated = _make_generated_agent("cap_agent", ["some_cap"], tool_names=["github_get_pr"])
+        analysis = _analysis(required_capabilities=["some_cap"])
+        plan = _make_plan(analysis, agents=[], tools=["github_get_pr"])
+        plan.runtime_agents = [generated]
+        result = validator.validate(plan, registry)
+        codes = {w.code for w in result.warnings}
+        assert "GENERATED_AGENT_NO_TOOLS" not in codes
+
+    def test_generated_agent_write_tool_without_hitl_is_error(
+        self, validator: PlanValidator
+    ):
+        registry = _registry_with_write_tool()
+        generated = _make_generated_agent(
+            "writer_agent", ["filesystem_write"], tool_names=["file_writer"]
+        )
+        analysis = _analysis(required_capabilities=["filesystem_write"], requires_hitl=False)
+        plan = _make_plan(analysis, agents=[], tools=["file_writer"])
+        plan.runtime_agents = [generated]
+        result = validator.validate(plan, registry)
+        codes = {e.code for e in result.errors}
+        assert "GENERATED_AGENT_WRITE_WITHOUT_HITL" in codes
+
+    def test_generated_agent_write_tool_with_hitl_passes(
+        self, validator: PlanValidator
+    ):
+        registry = _registry_with_write_tool()
+        generated = _make_generated_agent(
+            "writer_agent", ["filesystem_write"], tool_names=["file_writer"]
+        )
+        analysis = _analysis(required_capabilities=["filesystem_write"], requires_hitl=True)
+        plan = _make_plan(analysis, agents=[], tools=["file_writer"])
+        plan.runtime_agents = [generated]
+        plan.hitl_required = True
+        result = validator.validate(plan, registry)
+        codes = {e.code for e in result.errors}
+        assert "GENERATED_AGENT_WRITE_WITHOUT_HITL" not in codes
+
+    def test_capability_coverage_uses_runtime_agent_capabilities(
+        self, validator: PlanValidator, registry: CapabilityRegistry
+    ):
+        # Generated agent covers "telepathy" via its capabilities field.
+        # No CAPABILITY_UNMATCHED should fire.
+        generated = _make_generated_agent("telepathy_agent", ["telepathy"])
+        static = _make_static_agent("pr_data_agent", ["fetch_pr_data"])
+        analysis = _analysis(required_capabilities=["fetch_pr_data", "telepathy"])
+        plan = _make_plan(analysis, agents=["pr_data_agent"], tools=["github_get_pr"])
+        plan.runtime_agents = [static, generated]
+        result = validator.validate(plan, registry)
+        codes = {w.code for w in result.warnings}
+        assert "CAPABILITY_UNMATCHED" not in codes
+
+    def test_generated_agent_excluded_from_dataflow_check(
+        self, validator: PlanValidator, registry: CapabilityRegistry
+    ):
+        # Generated agent has no consumes/produces contract — should not affect dataflow.
+        generated = _make_generated_agent("extra_agent", ["extra_cap"])
+        pr_data = _make_static_agent("pr_data_agent", ["fetch_pr_data"])
+        review = _make_static_agent("review_specialist", ["review_code_quality"])
+        analysis = _analysis(required_capabilities=["fetch_pr_data", "review_code_quality", "extra_cap"])
+        plan = _make_plan(
+            analysis,
+            agents=["pr_data_agent", "review_specialist"],
+            tools=["github_get_pr", "github_get_diff", "knowledge_search"],
+        )
+        plan.runtime_agents = [pr_data, review, generated]
+        result = validator.validate(plan, registry)
+        codes = {e.code for e in result.errors}
+        assert "DATAFLOW_UNSATISFIED" not in codes

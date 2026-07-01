@@ -520,6 +520,71 @@ class TestPRReviewRegistry:
 
 
 # ---------------------------------------------------------------------------
+# Generatable capabilities (Phase D filesystem path)
+# ---------------------------------------------------------------------------
+
+
+class TestGeneratableCapabilities:
+    def test_register_and_all_capabilities_includes_new_cap(self):
+        registry = CapabilityRegistry()
+        registry.register_agent(_agent("a1", capabilities=["fetch_pr_data"]))
+        registry.register_generatable_capability("filesystem_read")
+        caps = registry.all_capabilities()
+        assert "fetch_pr_data" in caps
+        assert "filesystem_read" in caps
+
+    def test_all_capabilities_without_generatable_equals_agent_caps(self):
+        registry = CapabilityRegistry()
+        registry.register_agent(_agent("a1", capabilities=["cap_a", "cap_b"]))
+        assert set(registry.all_capabilities()) == set(registry.all_agent_capabilities())
+
+    def test_generatable_cap_not_in_all_agent_capabilities(self):
+        registry = CapabilityRegistry()
+        registry.register_generatable_capability("filesystem_read")
+        assert "filesystem_read" not in registry.all_agent_capabilities()
+
+    def test_generatable_cap_is_in_all_capabilities(self):
+        registry = CapabilityRegistry()
+        registry.register_generatable_capability("filesystem_read")
+        assert "filesystem_read" in registry.all_capabilities()
+
+    def test_generatable_cap_not_duplicated_when_also_agent_cap(self):
+        registry = CapabilityRegistry()
+        registry.register_agent(_agent("a1", capabilities=["filesystem_read"]))
+        registry.register_generatable_capability("filesystem_read")
+        caps = registry.all_capabilities()
+        assert caps.count("filesystem_read") == 1
+
+    def test_multiple_generatable_caps_all_appear(self):
+        registry = CapabilityRegistry()
+        registry.register_generatable_capability("filesystem_read")
+        registry.register_generatable_capability("web_fetch")
+        caps = registry.all_capabilities()
+        assert "filesystem_read" in caps
+        assert "web_fetch" in caps
+
+    def test_register_generatable_is_idempotent(self):
+        registry = CapabilityRegistry()
+        registry.register_generatable_capability("filesystem_read")
+        registry.register_generatable_capability("filesystem_read")
+        caps = [c for c in registry.all_capabilities() if c == "filesystem_read"]
+        assert len(caps) == 1
+
+    def test_pr_review_registry_without_filesystem_cap(self):
+        registry = CapabilityRegistry.build_pr_review_registry()
+        assert "filesystem_read" not in registry.all_capabilities()
+
+    def test_pr_review_registry_extended_with_filesystem_cap(self):
+        registry = CapabilityRegistry.build_pr_review_registry()
+        registry.register_generatable_capability("filesystem_read")
+        assert "filesystem_read" in registry.all_capabilities()
+        assert "fetch_pr_data" in registry.all_capabilities()
+
+    def test_all_capabilities_empty_registry(self):
+        assert CapabilityRegistry().all_capabilities() == []
+
+
+# ---------------------------------------------------------------------------
 # Prompt summary
 # ---------------------------------------------------------------------------
 

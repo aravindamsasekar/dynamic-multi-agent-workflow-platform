@@ -4,15 +4,16 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from platform.planner.agent_selector import AgentSelector
 from platform.planner.capability_registry import CapabilityRegistry
 from platform.planner.models import (
     GeneratedWorkflowPlan,
     GoalAnalysis,
     GuardrailConfig,
     RiskLevel,
+    RuntimeAgentDefinition,
 )
 from platform.planner.pattern_selector import PatternSelector
+from platform.planner.runtime_agent_generator import RuntimeAgentGenerator
 from platform.planner.tool_selector import ToolSelector
 
 # ---------------------------------------------------------------------------
@@ -51,7 +52,7 @@ def _generate_guardrails(analysis: GoalAnalysis) -> list[GuardrailConfig]:
 
 def _generate_warnings(
     analysis: GoalAnalysis,
-    selected_agents: list[str],
+    runtime_agents: list[RuntimeAgentDefinition],
     selected_tools: list[str],
 ) -> list[str]:
     notes: list[str] = []
@@ -67,7 +68,7 @@ def _generate_warnings(
             f"HITL enabled due to {analysis.risk_level.value} risk level."
         )
 
-    if not selected_agents:
+    if not runtime_agents:
         notes.append("No agents could be selected for this goal type.")
 
     if not selected_tools:
@@ -92,10 +93,10 @@ def _generate_explanation(
     user_goal: str,
     analysis: GoalAnalysis,
     selected_pattern: str,
-    selected_agents: list[str],
+    runtime_agents: list[RuntimeAgentDefinition],
 ) -> str:
     cap_summary = ", ".join(analysis.required_capabilities[:3]) or "none"
-    agents_summary = ", ".join(selected_agents) or "none"
+    agents_summary = ", ".join(r.id for r in runtime_agents) or "none"
     pattern_label = selected_pattern or "none"
     return (
         f"Capability-based plan requiring {len(analysis.required_capabilities)} capabilities, "
@@ -116,11 +117,17 @@ class PlanBuilder:
 
     No LLM calls. Accepts a CapabilityRegistry and produces a plan that can
     be validated (PlanValidator) and later executed (Phase E).
+
+    Invariant maintained by this class:
+        plan.selected_agents == [r.id for r in plan.runtime_agents if not r.generated]
+
+    PlanBuilder is the sole component that constructs both runtime_agents and
+    selected_agents. No other component mutates either field after build().
     """
 
     def __init__(self, registry: CapabilityRegistry) -> None:
         self._registry = registry
-        self._agent_selector = AgentSelector()
+        self._runtime_agent_generator = RuntimeAgentGenerator(registry)
         self._tool_selector = ToolSelector()
         self._pattern_selector = PatternSelector()
 
@@ -128,31 +135,39 @@ class PlanBuilder:
         """Build a GeneratedWorkflowPlan from a user goal and GoalAnalysis.
 
         All selections are deterministic — no I/O, no LLM.
-        Agents are selected first; pattern selection consults agent capabilities.
+        Agents are generated first; pattern and tool selection consult the full team.
         """
-        selected_agents = self._agent_selector.select(analysis, self._registry)
-        selected_pattern = self._pattern_selector.select(analysis, selected_agents, self._registry)
-        selected_tools = self._tool_selector.select(analysis, selected_agents, self._registry)
+        # Generate plan_id first so generated agent IDs are scoped to this plan.
+        # Invariant: selected_agents == [r.id for r in runtime_agents if not r.generated]
+        plan_id = str(uuid4())
+        runtime_agents = self._runtime_agent_generator.generate(
+            analysis.required_capabilities, plan_id=plan_id
+        )
+        selected_agents = [r.id for r in runtime_agents if not r.generated]
+
+        selected_pattern = self._pattern_selector.select(analysis, runtime_agents, self._registry)
+        selected_tools = self._tool_selector.select(analysis, runtime_agents, self._registry)
 
         guardrails = _generate_guardrails(analysis)
-        warnings = _generate_warnings(analysis, selected_agents, selected_tools)
+        warnings = _generate_warnings(analysis, runtime_agents, selected_tools)
         explanation = _generate_explanation(
-            user_goal, analysis, selected_pattern, selected_agents
+            user_goal, analysis, selected_pattern, runtime_agents
         )
 
         return GeneratedWorkflowPlan(
-            plan_id=str(uuid4()),
+            plan_id=plan_id,
             user_goal=user_goal,
             goal_analysis=analysis,
             selected_pattern=selected_pattern,
             selected_agents=selected_agents,
+            runtime_agents=runtime_agents,
             selected_tools=selected_tools,
             guardrails=guardrails,
             hitl_required=analysis.requires_hitl,
             warnings=warnings,
             explanation=explanation,
-            estimated_complexity=_estimate_complexity(len(selected_agents)),
+            estimated_complexity=_estimate_complexity(len(runtime_agents)),
             estimated_duration_seconds=_estimate_duration_seconds(
-                len(selected_agents), len(selected_tools)
+                len(runtime_agents), len(selected_tools)
             ),
         )

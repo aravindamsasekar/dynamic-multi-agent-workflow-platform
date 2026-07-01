@@ -25,6 +25,7 @@ class CapabilityRegistry:
         self._agents: dict[str, AgentCapabilityDescriptor] = {}
         self._tools: dict[str, ToolCapabilityDescriptor] = {}
         self._patterns: dict[str, PatternCapabilityDescriptor] = {}
+        self._generatable_capabilities: set[str] = set()
 
     # ------------------------------------------------------------------
     # Registration
@@ -83,6 +84,27 @@ class CapabilityRegistry:
                 if cap not in seen:
                     seen.add(cap)
                     result.append(cap)
+        return result
+
+    def register_generatable_capability(self, capability: str) -> None:
+        """Register a capability that generated agents can fulfil (no static agent needed).
+
+        Extends the GoalAnalyzer allow-list so the LLM can request capabilities served
+        exclusively by generated agents. Idempotent — registering twice has no effect.
+        """
+        self._generatable_capabilities.add(capability)
+
+    def all_capabilities(self) -> list[str]:
+        """All capabilities the system can handle: static-agent caps + generatable caps.
+
+        Used by GoalAnalyzer as the LLM allow-list. Generatable capabilities appear
+        after agent capabilities and are deduplicated against them.
+        """
+        agent_caps = set(self.all_agent_capabilities())
+        result = list(self.all_agent_capabilities())
+        for cap in sorted(self._generatable_capabilities):
+            if cap not in agent_caps:
+                result.append(cap)
         return result
 
     def all_produced_tokens(self) -> set[str]:

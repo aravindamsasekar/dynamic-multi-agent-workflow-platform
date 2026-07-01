@@ -14,6 +14,7 @@ class AdapterType(str, Enum):
     MCP = "mcp"
     GITHUB = "github"
     KNOWLEDGE = "knowledge"
+    FILESYSTEM = "filesystem"
 
 
 class ToolDefinition(BaseModel):

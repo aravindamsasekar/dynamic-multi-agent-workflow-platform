@@ -9,6 +9,7 @@ from platform.planner.models import (
     GoalAnalysis,
     GuardrailConfig,
     RiskLevel,
+    RuntimeAgentDefinition,
     ValidationError,
     ValidationResult,
     ValidationWarning,
@@ -32,6 +33,7 @@ def plan_to_json(plan: GeneratedWorkflowPlan) -> str:
         },
         "selected_pattern": plan.selected_pattern,
         "selected_agents": plan.selected_agents,
+        "runtime_agents": [a.to_dict() for a in plan.runtime_agents],
         "selected_tools": plan.selected_tools,
         "guardrails": [
             {"rule_type": g.rule_type, "config": g.config, "reason": g.reason}
@@ -50,8 +52,10 @@ def plan_to_json(plan: GeneratedWorkflowPlan) -> str:
 def plan_from_json(json_str: str) -> GeneratedWorkflowPlan:
     """Deserialize GeneratedWorkflowPlan from a JSON string.
 
-    Backward compatible: rows written before V3.2 (missing task_label or
-    missing_capabilities keys) deserialize with safe defaults.
+    Backward compatible:
+    - Old rows without 'runtime_agents': reconstruct minimal static references
+      from 'selected_agents' so the plan remains coherent (all generated=False).
+    - Old rows without 'task_label' or 'missing_capabilities': safe defaults.
     """
     d = json.loads(json_str)
     a = d["goal_analysis"]
@@ -72,12 +76,33 @@ def plan_from_json(json_str: str) -> GeneratedWorkflowPlan:
         )
         for g in d["guardrails"]
     ]
+
+    raw_agents = d.get("runtime_agents")
+    if raw_agents is not None:
+        runtime_agents = [RuntimeAgentDefinition.from_dict(a) for a in raw_agents]
+    else:
+        # Old rows: reconstruct static references from selected_agents.
+        # Capabilities are unknown but IDs are correct for the execution path.
+        runtime_agents = [
+            RuntimeAgentDefinition(
+                id=agent_id,
+                name=agent_id,
+                description="",
+                capabilities=[],
+                tool_names=[],
+                system_prompt="",
+                generated=False,
+            )
+            for agent_id in d.get("selected_agents", [])
+        ]
+
     return GeneratedWorkflowPlan(
         plan_id=d["plan_id"],
         user_goal=d["user_goal"],
         goal_analysis=analysis,
         selected_pattern=d["selected_pattern"],
         selected_agents=d["selected_agents"],
+        runtime_agents=runtime_agents,
         selected_tools=d["selected_tools"],
         guardrails=guardrails,
         hitl_required=d["hitl_required"],
